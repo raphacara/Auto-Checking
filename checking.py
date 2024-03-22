@@ -1,20 +1,21 @@
 # ========================================= Import des bibliothèques ==============================================
-import shutil
-import tempfile
-import tkinter as tk
-from tkinter import filedialog
 import tkinter.messagebox as messagebox
-
-from PIL import Image, ImageTk
-from openpyxl.styles import Font, PatternFill
-from datetime import datetime
+import openpyxl
 import threading
 import pandas as pd
+import numpy as np
 import json
 import sys
+import itertools
 import os
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.workbook import Workbook
+import shutil
+import tempfile
+
+import tkinter as tk
+from tkinter import filedialog
+from PIL import Image, ImageTk
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
 
 # =============================================== CONFIGURATIONS ==================================================
 bdd = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
@@ -39,6 +40,8 @@ def merge_files():
     global date_entry1
     global ref_entry2
     global date_entry2
+    name1 = os.path.basename(file1)
+    name2 = os.path.basename(file2)
 
     if file1 is None or file2 is None:
         print("Please select both Excel files.")
@@ -62,6 +65,14 @@ def merge_files():
     df_file1 = pd.read_excel(file1)
     df_file2 = pd.read_excel(file2)
 
+    # Nettoyage des noms de colonnes et des entrées de référence et de date
+    ref_entry1 = ref_entry1.strip().lower()
+    date_entry1 = date_entry1.strip().lower()
+    ref_entry2 = ref_entry2.strip().lower()
+    date_entry2 = date_entry2.strip().lower()
+    df_file1.columns = [col.strip().lower() for col in df_file1.columns]
+    df_file2.columns = [col.strip().lower() for col in df_file2.columns]
+
     # Vérification des noms de colonnes
     missing_cols_file1 = [col for col in (ref_entry1, date_entry1) if col not in df_file1.columns]
     if missing_cols_file1:
@@ -70,6 +81,7 @@ def merge_files():
         messagebox.showinfo("Error", f"The following column(s) in file 1 are missing: {', '.join(missing_cols_file1)}")
         root.update()
         return
+
     missing_cols_file2 = [col for col in (ref_entry2, date_entry2) if col not in df_file2.columns]
     if missing_cols_file2:
         progress_dialog.destroy()
@@ -78,113 +90,171 @@ def merge_files():
         root.update()
         return
 
-    df_file1.rename(columns={ref_entry1: 'Doc_Achat', date_entry1: 'date'}, inplace=True)
-    df_file2.rename(columns={ref_entry2: 'Doc_Achat', date_entry2: 'date'}, inplace=True)
+    df_file1.rename(columns={ref_entry1: 'REFERENCE', date_entry1: 'COMPARE'}, inplace=True)
+    df_file2.rename(columns={ref_entry2: 'REFERENCE', date_entry2: 'COMPARE'}, inplace=True)
 
-    print("Columns in df_file1:", df_file1.columns)
-    print("Columns in df_file2:", df_file2.columns)
-    print(df_file1['date'])
+    print("\nColumns in df_file1:", df_file1.columns)
+    print("\nColumns in df_file2:", df_file2.columns)
+    print("\nType file 1:", df_file1['COMPARE'].dtype)
+    print("\nType file 2:", df_file2['COMPARE'].dtype)
 
-    # Vérification du type de données dans les colonnes date pour le premier fichier
-    print("Data type of 'date' column in file 1:", df_file1['date'].dtype)
-    if df_file1['date'].dtype != 'datetime64[ns]':
-        df_file1['date'] = pd.to_datetime(df_file1['date'], errors='coerce', format='%d/%m/%Y')
+    def keep_eight_digits(series):
+        series_as_str = series.astype(str)
+        extracted = series_as_str.str.extract('(\d{8})')[0]
+        # Remplace par la séquence extraite si elle est trouvée, sinon conserve la valeur originale
+        return series.where(extracted.isna(), extracted)
 
-    # Vérification du type de données dans les colonnes date pour le deuxième fichier
-    print("Data type of 'date' column in file 2:", df_file2['date'].dtype)
-    if df_file2['date'].dtype != 'datetime64[ns]':
-        df_file2['date'] = pd.to_datetime(df_file2['date'], errors='coerce', format='%d/%m/%Y')
+    # Application de la fonction aux colonnes REFERENCE avant le merge
+    df_file1['REFERENCE'] = keep_eight_digits(df_file1['REFERENCE'])
+    df_file2['REFERENCE'] = keep_eight_digits(df_file2['REFERENCE'])
 
-    # Supprimer les lignes où les dates sont vides ou invalides
-    df_file1.dropna(subset=['date'], inplace=True)
-    df_file2.dropna(subset=['date'], inplace=True)
+    # Exemple de suppression des doublons basée uniquement sur la colonne 'REFERENCE'
+    df_file1 = df_file1.drop_duplicates(subset=['REFERENCE'], keep='last')
+    df_file2 = df_file2.drop_duplicates(subset=['REFERENCE'], keep='last')
 
-    # Afficher les données après conversion et nettoyage
-    print("\nFile 1 after conversion and cleaning:")
-    print(df_file1['date'])
-    print("\nFile 2 after conversion and cleaning:")
-    print(df_file2['date'])
+    # Vérification du type de données dans les colonnes à comparer
+    if df_file1['COMPARE'].dtype == 'datetime64[ns]':
+        df_file1['COMPARE'] = pd.to_datetime(df_file1['COMPARE'], errors='coerce', format='%d/%m/%Y')
+    if df_file2['COMPARE'].dtype == 'datetime64[ns]':
+        df_file2['COMPARE'] = pd.to_datetime(df_file2['COMPARE'], errors='coerce', format='%d/%m/%Y')
+
+    df_file1 = apply_date_conversion(df_file1, ['COMPARE'])
+    df_file2 = apply_date_conversion(df_file2, ['COMPARE'])
 
     # Fusionner les deux DataFrames sur la colonne 'Doc_Achat'
-    df_merged = pd.merge(df_file1, df_file2, on='Doc_Achat', suffixes=('_file1', '_file2'))
+    df_merged = pd.merge(df_file1, df_file2, on='REFERENCE', suffixes=('_1', '_2'))
 
-    print(df_merged)
+    # TEST LOGIQUE 1 ! Comparer si les colonnes sont identiques
+    df_merged['Result'] = np.where(df_merged['COMPARE_1'] == df_merged['COMPARE_2'], 'identical', 'different')
 
-    # Calculer la différence de jours entre les dates du fichier 1 et du fichier 2
-    df_merged['date_difference'] = (df_merged['date_file2'] - df_merged['date_file1']).dt.days
+    # Convertir 'COMPARE_1' et 'COMPARE_2' en datetime, avec 'coerce' pour gérer les non-dates
+    df_merged['COMPARE_1_datetime'] = pd.to_datetime(df_merged['COMPARE_1'], errors='coerce', format='%d.%m.%Y')
+    df_merged['COMPARE_2_datetime'] = pd.to_datetime(df_merged['COMPARE_2'], errors='coerce', format='%d.%m.%Y')
 
-    df_output = df_merged[['Doc_Achat', 'date_file1', 'date_file2', 'date_difference']].copy()
+    # TEST LOGIQUE 2 ! Calculer la différence en jours où les deux colonnes sont des dates
+    df_merged['Difference'] = (df_merged['COMPARE_2_datetime'] - df_merged['COMPARE_1_datetime']).dt.days
+
+    # Garder les lignes où au moins une des deux colonnes COMPARE n'est pas NaN
+    df_filtered = df_merged[(df_merged['COMPARE_1'].notna()) | (df_merged['COMPARE_2'].notna())]
+
+    # Renommer les colonnes
+    df_output = df_filtered[['REFERENCE', 'COMPARE_1', 'COMPARE_2', 'Result', 'Difference']].copy()
     df_output.rename(
-        columns={'Doc_Achat': ref_entry1_var.get(), 'date_file1': date_entry1_var.get(), 'date_file2': date_entry2_var.get()},
-        inplace=True)
+        columns={'REFERENCE': ref_entry1_var.get(), 'COMPARE_1': f"{date_entry1_var.get()} \n({name1})",
+                 'COMPARE_2': f"{date_entry2_var.get()} \n({name2})"}, inplace=True)
 
-    # Print final de comparaison de dates
-    print(df_output)
+    # Fermer la fenêtre d'attente
     progress_dialog.destroy()
 
     # Demander à l'utilisateur l'emplacement et le nom du fichier Excel à enregistrer
     save_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx")])
     if save_path:
-        # Créer un nom de fichier temporaire
-        temp_file = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
-
-        # Formatage du fichier Excel temporaire
-        format_excel(df_output, temp_file.name)
+        temp_file = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)  # Créer un nom de fichier temporaire
+        format_excel(df_output, temp_file.name)  # Formatage du fichier Excel temporaire
 
         # Enregistrer le fichier temporaire à l'emplacement spécifié par l'utilisateur
         shutil.copyfile(temp_file.name, save_path)
         temp_file.close()
         os.unlink(temp_file.name)
 
+        os.startfile(save_path)  # Ouvrir le fichier après l'enregistrement
+        # messagebox.showinfo("Success", "Excel file saved successfully. It will now be opened.")
         print("\nFormatted Excel file saved successfully.")
 
     root.update()
 
-# ======================================== Fonctions utilitaires Gadget=============================================
+# ======================================== Fonctions utilitaires =====================================================
 def format_excel(df_output, excel_file):
-    # Créer un nouveau classeur Excel
-    workbook = Workbook()
+    # Exporter le DataFrame vers un fichier Excel
+    df_output.to_excel(excel_file, index=False)
 
-    # Ajouter une feuille de calcul
+    # Charger le fichier Excel pour modifier avec openpyxl
+    workbook = openpyxl.load_workbook(excel_file)
     ws = workbook.active
 
-    # Copier les données du DataFrame dans la feuille de calcul
-    for row in dataframe_to_rows(df_output, index=False, header=True):
-        ws.append(row)
+    # Styles existants
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="5B9BD5", end_color="5B9BD5", fill_type="solid")
+    data_fill = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")
+    data_font = Font(color="000000")  # Noir
+
+    # Appliquer le style aux données et ajuster la largeur des colonnes
+    max_width = 27
+    for column_cells in ws.columns:
+        length = max(len(str(cell.value)) for cell in column_cells)
+        adjusted_width = min(length, max_width)  # Ajuster la largeur à un maximum
+        ws.column_dimensions[get_column_letter(column_cells[0].column)].width = (adjusted_width + 2) * 1.2
+        ws.row_dimensions[1].height = 43  # Cette valeur peut être ajustée selon vos besoins
+
+        for cell in column_cells:
+            cell.fill = data_fill
+            cell.font = data_font
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+
+    # Couleurs pour les lignes basées sur la colonne 'Result'
+    fill_identical = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")  # Vert clair
+    fill_different = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")  # Rouge clair
+
+    # Trouver l'index de la colonne 'Result'
+    result_col_idx = None
+    for idx, cell in enumerate(ws[1], start=1):
+        if cell.value == 'Result':
+            result_col_idx = idx
+            break
+
+    # Appliquer les couleurs
+    if result_col_idx:
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            result_cell = row[result_col_idx - 1]  # Ajuster l'index
+            fill = fill_identical if result_cell.value == 'identical' else fill_different
+            for cell in row:
+                cell.fill = fill
 
     # Appliquer le style au header
-    header_font = Font(b=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="5B9BD5", end_color="5B9BD5", fill_type="solid")
     for cell in ws[1]:
         cell.font = header_font
         cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrapText=True)
 
-    # Appliquer le style aux données
-    data_fill = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")
-    data_font = Font(color="000000")  # Noir
-    for row in ws.iter_rows(min_row=2):
-        for cell in row:
-            cell.fill = data_fill
-            cell.font = data_font
-            # Formater les cellules contenant des dates au format JJ/MM/AAAA
-            if isinstance(cell.value, datetime):
-                cell.number_format = 'DD/MM/YYYY'
-
-    # Ajuster la largeur des colonnes
-    for column in ws.columns:
-        max_length = 0
-        column_letter = column[0].column_letter
-        for cell in column:
-            try:
-                if len(str(cell.value)) > max_length:
-                    max_length = len(str(cell.value))
-            except:
-                pass
-        adjusted_width = (max_length + 2) * 1.2  # Ajouter un espace supplémentaire et un facteur d'ajustement
-        ws.column_dimensions[column_letter].width = adjusted_width
-
-    # Sauvegarder le classeur Excel dans le fichier temporaire
+    # Sauvegarder les modifications
     workbook.save(excel_file)
+
+def apply_date_conversion(df, date_columns):
+    # Liste de formats de dates à essayer
+    date_formats = ["%d/%m/%Y", "%d.%m.%Y"]
+
+    def convert_dates(value):
+        # Essayer de convertir la date en utilisant les différents formats
+        for date_format in date_formats:
+            try:
+                return pd.to_datetime(value, format=date_format, errors='raise').strftime('%d.%m.%Y')
+            except (ValueError, TypeError):
+                # Si la conversion échoue, ignorer l'erreur et essayer le format suivant
+                pass
+
+        # Si aucun format ne convient, retourner la valeur originale
+        return value
+
+    for col in date_columns:
+        df[col] = df[col].apply(convert_dates)
+    return df
+
+def add_date_difference_column(df_merge):
+    # Assurez-vous que df_merge est une copie distincte pour éviter les avertissements
+    df_temp = df_merge.copy()
+
+    # Convertir les colonnes 'COMPARE_1' et 'COMPARE_2' en datetime
+    df_merge['COMPARE_1'] = pd.to_datetime(df_merge['COMPARE_1'], format="%d/%m/%Y", errors='coerce')
+    df_merge['COMPARE_2'] = pd.to_datetime(df_merge['COMPARE_2'], format="%d/%m/%Y", errors='coerce')
+
+    # Initialiser la nouvelle colonne avec des NaN
+    df_temp['Date_difference'] = pd.NaT
+
+    # Calculer la différence en jours là où les deux colonnes sont des dates valides
+    mask = df_merge['COMPARE_1'].notna() & df_merge['COMPARE_2'].notna()
+    df_temp.loc[mask, 'Date_difference'] = (df_merge.loc[mask, 'COMPARE_2'] - df_merge.loc[mask, 'COMPARE_1']).dt.days
+
+    return df_temp
 
 def on_enter1(event):
     if file1 is None:
@@ -225,12 +295,29 @@ def update_image(image_label, image, angle):
     rotated_image_tk = ImageTk.PhotoImage(rotated_image2)  # Convertir l'image en format Tkinter
     image_label.configure(image=rotated_image_tk)  # Mettre à jour l'image affichée dans le label
     image_label.image = rotated_image_tk  # Garder une référence à l'image pour éviter la suppression par le garbage collector
-    root.after(10, update_image, image_label, image, angle+10)  # Appeler cette fonction après 500 millisecondes avec un angle augmenté
+    root.after(20, update_image, image_label, image, angle-2)  # Appeler cette fonction après 500 millisecondes avec un angle augmenté
+
+def generate_color_transition(start_hex, end_hex, steps):
+    start_rgb = [int(start_hex[i1:i1+2], 16) for i1 in range(1, 6, 2)]
+    end_rgb = [int(end_hex[i1:i1+2], 16) for i1 in range(1, 6, 2)]
+    transition = [
+        "#" + "".join(
+            ["{:02x}".format(int(start_rgb[j] + ((end_rgb[j] - start_rgb[j]) * i / (steps-1))))
+             for j in range(3)]
+        ) for i in range(steps)
+    ]
+    return transition
+
+def change_color():
+    new_color = next(colors_cycle)
+    bg_label.config(bg=new_color)
+    root.after(200, change_color)  # Planifier le changement de couleur
 
 # =========================================== Boutons de l'interface Graphique ======================================
 def select_file1():
     global file1
     file1 = filedialog.askopenfilename(title="Select the 1st Excel file", filetypes=[("Excel Files", "*.xlsx; *.xlsb; *.xlsm; *.xls")])
+
     if file1:
         file_label1.config(text=os.path.basename(file1), bg=color2, fg=color1)
         update_button_state()  # Mettre à jour l'état du bouton
@@ -251,7 +338,7 @@ def show_progress_dialog():
     progress_dialog.title("Processing")
     progress_dialog.configure(background=color2)  # Définir la couleur d'arrière-plan
     progress_dialog.resizable(False, False)  # Désactiver la possibilité de redimensionner
-    progress_dialog.overrideredirect(True)  # Supprimer la barre de titre
+    # progress_dialog.overrideredirect(True)  # Supprimer la barre de titre
     progress_dialog.attributes("-topmost", True)  # Garder la fenêtre au premier plan
     center_window(progress_dialog, 800, 400)  # Centrer la fenêtre sur l'écran
     progress_label = tk.Label(progress_dialog, text="Please wait while processing...", bg=color2, fg=color1, font=font_title)
@@ -511,7 +598,7 @@ for i in range(7):
 # Création des widgets
 bg_path = os.path.join(bdd, 'intro1.png')
 bg_img = tk.PhotoImage(file=bg_path)
-bg_img = bg_img.subsample(2)
+bg_img = bg_img.subsample(1)
 
 # Créer une étiquette pour l'image de fond
 bg_label = tk.Label(root, image=bg_img, bg=color1)
@@ -553,7 +640,7 @@ btn_merge_files.grid(row=1, column=3, padx=100, pady=(20,0), sticky="nsew")
 btn_merge_files.bind("<Enter>", lambda event: on_enter3(event))
 btn_merge_files.bind("<Leave>", lambda event: on_leave3(event))
 
-#--------------------------------------------------------------------------------------------------------------------
+#-------------------------------------------------- PRESETS-------------------------------------------------------------
 preset_frame = tk.Frame(root, bg=color1, bd=2, relief=tk.SOLID)
 preset_frame.grid(row=6, column=0, columnspan=7, sticky="nsew")
 
@@ -593,7 +680,14 @@ preset_menu = tk.OptionMenu(root, selected_preset, *button_texts, command=lambda
 preset_menu.config(font=font_style, bg=color1, fg=color2, height=1)  # Modifier la police, la couleur de fond et la hauteur
 preset_menu.grid(row=4, column=3, sticky="nsew", padx=70 , pady=(100,0))
 
-# Dimensionnement de la fenêtre
-center_window(root, 1000, 500)
+# Changer les couleurs du fond
+colors = []
+colors += generate_color_transition(color1, color2, 128)  # De color1 à color2
+colors += generate_color_transition(color2, color3, 128)  # De color2 à color3
+colors += generate_color_transition(color3, color1, 128)  # De color3 à color1
+colors_cycle = itertools.cycle(colors)
+root.after(500, change_color)  # Change la couleur du fond
 
-root.mainloop()  # Lancement de la boucle principale tkinter
+# Fin
+center_window(root, 1000, 500)  # Redimensionne la fenêtre
+root.mainloop()  # démarrage de la boucle principale
