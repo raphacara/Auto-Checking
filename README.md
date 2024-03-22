@@ -1,2 +1,2 @@
 # Auto-Checking
-Checking dates in Excel files
+Checking columns in Excel files
