@@ -34,36 +34,32 @@ ref_entry2 = ""
 date_entry2 = ""
 rotated_image = None
 
-# =============================================== Fonction Principale ==============================================
+# =============================================== Fonction Principale ===============================================
+# Créer une colonne pour les doublons !
 def merge_files():
     global ref_entry1
     global date_entry1
     global ref_entry2
     global date_entry2
+
+    # Checker si tout va bien
+    if not check_the_parameters():
+        print("Wrong Parameters.")
+        return
+    print("Right Parameters !")
+
+
     name1 = os.path.basename(file1)
     name2 = os.path.basename(file2)
-
-    if file1 is None or file2 is None:
-        print("Please select both Excel files.")
-        messagebox.showinfo("Error", "Please select both Excel files.")
-        return
-
-    if selected_preset.get() == "Select your preset":
-        print("Please select a preset")
-        messagebox.showinfo("Error", "Please select a preset")
-        return
-
-    if not all((ref_entry1, date_entry1, ref_entry2, date_entry2)):
-        print("Please fill in all column names in the preset.")
-        messagebox.showinfo("Error", "Please fill in all column names in the preset.")
-        return
+    expected_columns1 = [ref_entry1.lower().strip(), date_entry1.lower().strip()]
+    expected_columns2 = [ref_entry2.lower().strip(), date_entry2.lower().strip()]
 
     # Afficher la boîte de dialogue de progression
     progress_dialog = show_progress_dialog()
 
-    # Lecture des fichiers Excel
-    df_file1 = pd.read_excel(file1)
-    df_file2 = pd.read_excel(file2)
+    # Lecture des fichiers Excel avec ajustement d'en-tête si nécessaire
+    df_file1 = read_excel_file(file1, expected_columns1)
+    df_file2 = read_excel_file(file2, expected_columns2)
 
     # Nettoyage des noms de colonnes et des entrées de référence et de date
     ref_entry1 = ref_entry1.strip().lower()
@@ -90,17 +86,16 @@ def merge_files():
         root.update()
         return
 
-    df_file1.rename(columns={ref_entry1: 'REFERENCE', date_entry1: 'COMPARE'}, inplace=True)
-    df_file2.rename(columns={ref_entry2: 'REFERENCE', date_entry2: 'COMPARE'}, inplace=True)
+    df_file1.rename(columns={ref_entry1.lower().strip(): 'REFERENCE', date_entry1.lower().strip(): 'COMPARE'}, inplace=True)
+    df_file2.rename(columns={ref_entry2.lower().strip(): 'REFERENCE', date_entry2.lower().strip(): 'COMPARE'}, inplace=True)
 
-    print("\nColumns in df_file1:", df_file1.columns)
-    print("\nColumns in df_file2:", df_file2.columns)
     print("\nType file 1:", df_file1['COMPARE'].dtype)
     print("\nType file 2:", df_file2['COMPARE'].dtype)
 
     def keep_eight_digits(series):
         series_as_str = series.astype(str)
-        extracted = series_as_str.str.extract('(\d{8})')[0]
+        # Modifier pour extraire la première séquence de 8 chiffres ne commençant pas avec 0
+        extracted = series_as_str.str.extract('([1-9]\d{7})')[0]
         # Remplace par la séquence extraite si elle est trouvée, sinon conserve la valeur originale
         return series.where(extracted.isna(), extracted)
 
@@ -121,6 +116,7 @@ def merge_files():
     df_file1 = apply_date_conversion(df_file1, ['COMPARE'])
     df_file2 = apply_date_conversion(df_file2, ['COMPARE'])
 
+    # ----------------------------------------------------------------------------------
     # Fusionner les deux DataFrames sur la colonne 'Doc_Achat'
     df_merged = pd.merge(df_file1, df_file2, on='REFERENCE', suffixes=('_1', '_2'))
 
@@ -137,8 +133,22 @@ def merge_files():
     # Garder les lignes où au moins une des deux colonnes COMPARE n'est pas NaN
     df_filtered = df_merged[(df_merged['COMPARE_1'].notna()) | (df_merged['COMPARE_2'].notna())]
 
+    # Nom de colonne normalisé pour "Reception date of Last SFR"
+    special_column_name = "reception date of last sfr".strip().lower()
+
+    # Vérifier si cette colonne existe dans df_file1
+    if special_column_name in df_file1.columns:
+        df_merged[special_column_name] = df_file1[special_column_name]
+
     # Renommer les colonnes
     df_output = df_filtered[['REFERENCE', 'COMPARE_1', 'COMPARE_2', 'Result', 'Difference']].copy()
+
+    # Si la colonne spéciale a été ajoutée, incluez-la également dans df_output
+    if special_column_name in df_merged.columns:
+        df_output[special_column_name] = df_merged[special_column_name]
+        df_output[special_column_name] = pd.to_datetime(df_output[special_column_name], errors='coerce')
+        df_output[special_column_name] = df_output[special_column_name].dt.strftime('%d.%m.%Y')
+
     df_output.rename(
         columns={'REFERENCE': ref_entry1_var.get(), 'COMPARE_1': f"{date_entry1_var.get()} \n({name1})",
                  'COMPARE_2': f"{date_entry2_var.get()} \n({name2})"}, inplace=True)
@@ -162,6 +172,48 @@ def merge_files():
         print("\nFormatted Excel file saved successfully.")
 
     root.update()
+
+def check_the_parameters():
+    if file1 is None or file2 is None:
+        print("Please select both Excel files.")
+        messagebox.showinfo("Error", "Please select both Excel files.")
+        return False
+
+    if selected_preset.get() == "Select your preset":
+        print("Please select a preset")
+        messagebox.showinfo("Error", "Please select a preset")
+        return False
+
+    if not all((ref_entry1, date_entry1, ref_entry2, date_entry2)):
+        print("Please fill in all column names in the preset.")
+        messagebox.showinfo("Error", "Please fill in all column names in the preset.")
+        return False
+
+    return True
+
+
+def read_excel_file(filepath, expected_columns):
+    # Essayez de lire les en-têtes sur plusieurs lignes si nécessaire
+    max_header_lines = 10  # nombre maximal de lignes à vérifier pour l'en-tête
+
+    for header_line in range(max_header_lines):
+        # Lire les en-têtes potentiels
+        df = pd.read_excel(filepath, header=header_line)
+        # Obtenir les noms de colonnes normalisés du DataFrame
+        normalized_columns = [col.strip().lower() for col in df.columns]
+
+        # Vérifier si les colonnes attendues sont toutes présentes
+        if all(col.lower().strip() in normalized_columns for col in expected_columns):
+            print(f"Found expected columns at header line {header_line + 1}")
+            return df  # Retourne le DataFrame si les en-têtes sont corrects
+
+        # Sinon, les colonnes attendues ne sont pas toutes présentes, supprimer la première ligne
+        df.drop(df.index[0], inplace=True)
+        # Enregistrer le DataFrame sans la première ligne comme nouveau fichier Excel et réessayer
+        df.to_excel(filepath, index=False)
+
+    # Si les colonnes attendues ne sont pas trouvées après max_header_lines tentatives
+    raise ValueError(f"Could not find the required columns after checking {max_header_lines} lines.")
 
 # ======================================== Fonctions utilitaires =====================================================
 def format_excel(df_output, excel_file):
