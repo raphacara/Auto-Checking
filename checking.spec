@@ -5,13 +5,14 @@ a = Analysis(
     ['checking.py'],
     pathex=[],
     binaries=[],
-    datas=[('intro1.png', '.'), ('engine.png', '.'), ('engine.ico', '.')],
+    datas=[('engine.ico', '.'), ('engine.png', '.'), ('intro1.png', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
     noarchive=False,
+    optimize=0,
 )
 pyz = PYZ(a.pure)
 

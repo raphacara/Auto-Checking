@@ -35,6 +35,7 @@ date_entry2 = ""
 rotated_image = None
 
 # =============================================== Fonction Principale ===============================================
+
 # Créer une colonne pour les doublons !
 def merge_files():
     global ref_entry1
@@ -48,7 +49,6 @@ def merge_files():
         return
     print("Right Parameters !")
 
-
     name1 = os.path.basename(file1)
     name2 = os.path.basename(file2)
     expected_columns1 = [ref_entry1.lower().strip(), date_entry1.lower().strip()]
@@ -57,53 +57,43 @@ def merge_files():
     # Afficher la boîte de dialogue de progression
     progress_dialog = show_progress_dialog()
 
-    # Lecture des fichiers Excel avec ajustement d'en-tête si nécessaire
-    df_file1 = read_excel_file(file1, expected_columns1)
-    df_file2 = read_excel_file(file2, expected_columns2)
-
-    # Nettoyage des noms de colonnes et des entrées de référence et de date
-    ref_entry1 = ref_entry1.strip().lower()
-    date_entry1 = date_entry1.strip().lower()
-    ref_entry2 = ref_entry2.strip().lower()
-    date_entry2 = date_entry2.strip().lower()
-    df_file1.columns = [col.strip().lower() for col in df_file1.columns]
-    df_file2.columns = [col.strip().lower() for col in df_file2.columns]
-
-    # Vérification des noms de colonnes
-    missing_cols_file1 = [col for col in (ref_entry1, date_entry1) if col not in df_file1.columns]
-    if missing_cols_file1:
+    try:
+        # Lecture des fichiers Excel avec ajustement d'en-tête si nécessaire
+        df_file1 = read_excel_file(file1, expected_columns1)
+        df_file2 = read_excel_file(file2, expected_columns2)
+    except ValueError as e:
+        print(e)
         progress_dialog.destroy()
-        print(f"The following column(s) in file 1 are missing: {', '.join(missing_cols_file1)}")
-        messagebox.showinfo("Error", f"The following column(s) in file 1 are missing: {', '.join(missing_cols_file1)}")
-        root.update()
-        return
+        faulty_file = file1 if 'file1' in str(e) else file2
+        messagebox.showwarning("Invalid Excel file",
+                               f"Your Excel File : '{os.path.basename(faulty_file)}' is weird, use another one.")
+        return  # Stopper l'exécution en cas d'erreur
+    # Nettoyer les noms de colonnes et les entrées de référence et de date
+    cleanup(df_file1, df_file2)
 
-    missing_cols_file2 = [col for col in (ref_entry2, date_entry2) if col not in df_file2.columns]
-    if missing_cols_file2:
+    # Appliquer le renommage
+    try:
+        rename_columns(df_file1, ref_entry1, 'REFERENCE')
+        rename_columns(df_file1, date_entry1, 'COMPARE')
+        rename_columns(df_file2, ref_entry2, 'REFERENCE')
+        rename_columns(df_file2, date_entry2, 'COMPARE')
+    except ValueError as e:
+        print(e)
         progress_dialog.destroy()
-        print(f"The following column(s) in file 2 are missing: {', '.join(missing_cols_file2)}")
-        messagebox.showinfo("Error", f"The following column(s) in file 2 are missing: {', '.join(missing_cols_file2)}")
-        root.update()
-        return
-
-    df_file1.rename(columns={ref_entry1.lower().strip(): 'REFERENCE', date_entry1.lower().strip(): 'COMPARE'}, inplace=True)
-    df_file2.rename(columns={ref_entry2.lower().strip(): 'REFERENCE', date_entry2.lower().strip(): 'COMPARE'}, inplace=True)
+        return  # Stopper l'exécution si une colonne n'est pas trouvée
 
     print("\nType file 1:", df_file1['COMPARE'].dtype)
     print("\nType file 2:", df_file2['COMPARE'].dtype)
-
-    def keep_eight_digits(series):
-        series_as_str = series.astype(str)
-        # Modifier pour extraire la première séquence de 8 chiffres ne commençant pas avec 0
-        extracted = series_as_str.str.extract('([1-9]\d{7})')[0]
-        # Remplace par la séquence extraite si elle est trouvée, sinon conserve la valeur originale
-        return series.where(extracted.isna(), extracted)
 
     # Application de la fonction aux colonnes REFERENCE avant le merge
     df_file1['REFERENCE'] = keep_eight_digits(df_file1['REFERENCE'])
     df_file2['REFERENCE'] = keep_eight_digits(df_file2['REFERENCE'])
 
-    # Exemple de suppression des doublons basée uniquement sur la colonne 'REFERENCE'
+    # Marquer les doublons dans chaque fichier
+    df_file1['is_duplicate'] = df_file1.duplicated(subset=['REFERENCE'], keep=False)
+    df_file2['is_duplicate'] = df_file2.duplicated(subset=['REFERENCE'], keep=False)
+
+    # Suppression des doublons basée uniquement sur la colonne 'REFERENCE'
     df_file1 = df_file1.drop_duplicates(subset=['REFERENCE'], keep='last')
     df_file2 = df_file2.drop_duplicates(subset=['REFERENCE'], keep='last')
 
@@ -119,6 +109,10 @@ def merge_files():
     # ----------------------------------------------------------------------------------
     # Fusionner les deux DataFrames sur la colonne 'Doc_Achat'
     df_merged = pd.merge(df_file1, df_file2, on='REFERENCE', suffixes=('_1', '_2'))
+
+    # Ajouter une colonne pour indiquer si la référence avait des doublons dans l'un des fichiers ou les deux
+    df_merged['Duplicates ?'] = (df_merged['is_duplicate_1'] | df_merged['is_duplicate_2'])
+    df_merged['Duplicates ?'] = df_merged['Duplicates ?'].map({True: 'Yes', False: 'No'})
 
     # TEST LOGIQUE 1 ! Comparer si les colonnes sont identiques
     df_merged['Result'] = np.where(df_merged['COMPARE_1'] == df_merged['COMPARE_2'], 'identical', 'different')
@@ -141,7 +135,7 @@ def merge_files():
         df_merged[special_column_name] = df_file1[special_column_name]
 
     # Renommer les colonnes
-    df_output = df_filtered[['REFERENCE', 'COMPARE_1', 'COMPARE_2', 'Result', 'Difference']].copy()
+    df_output = df_filtered[['REFERENCE', 'COMPARE_1', 'COMPARE_2', 'Result', 'Difference', 'Duplicates ?']].copy()
 
     # Si la colonne spéciale a été ajoutée, incluez-la également dans df_output
     if special_column_name in df_merged.columns:
@@ -156,22 +150,7 @@ def merge_files():
     # Fermer la fenêtre d'attente
     progress_dialog.destroy()
 
-    # Demander à l'utilisateur l'emplacement et le nom du fichier Excel à enregistrer
-    save_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx")])
-    if save_path:
-        temp_file = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)  # Créer un nom de fichier temporaire
-        format_excel(df_output, temp_file.name)  # Formatage du fichier Excel temporaire
-
-        # Enregistrer le fichier temporaire à l'emplacement spécifié par l'utilisateur
-        shutil.copyfile(temp_file.name, save_path)
-        temp_file.close()
-        os.unlink(temp_file.name)
-
-        os.startfile(save_path)  # Ouvrir le fichier après l'enregistrement
-        # messagebox.showinfo("Success", "Excel file saved successfully. It will now be opened.")
-        print("\nFormatted Excel file saved successfully.")
-
-    root.update()
+    save_excel(df_output)  # Enregistrer les résultats dans un fichier Excel
 
 def check_the_parameters():
     if file1 is None or file2 is None:
@@ -191,29 +170,84 @@ def check_the_parameters():
 
     return True
 
-
 def read_excel_file(filepath, expected_columns):
     # Essayez de lire les en-têtes sur plusieurs lignes si nécessaire
     max_header_lines = 10  # nombre maximal de lignes à vérifier pour l'en-tête
 
     for header_line in range(max_header_lines):
-        # Lire les en-têtes potentiels
-        df = pd.read_excel(filepath, header=header_line)
-        # Obtenir les noms de colonnes normalisés du DataFrame
-        normalized_columns = [col.strip().lower() for col in df.columns]
+        try:
+            # Lire les en-têtes potentiels
+            df = pd.read_excel(filepath, header=header_line)
 
-        # Vérifier si les colonnes attendues sont toutes présentes
-        if all(col.lower().strip() in normalized_columns for col in expected_columns):
-            print(f"Found expected columns at header line {header_line + 1}")
-            return df  # Retourne le DataFrame si les en-têtes sont corrects
+            if df.empty:
+                continue  # Si le DataFrame est vide, passer à l'itération suivante
 
-        # Sinon, les colonnes attendues ne sont pas toutes présentes, supprimer la première ligne
-        df.drop(df.index[0], inplace=True)
-        # Enregistrer le DataFrame sans la première ligne comme nouveau fichier Excel et réessayer
-        df.to_excel(filepath, index=False)
+            # Obtenir les noms de colonnes normalisés du DataFrame
+            normalized_columns = [str(col).strip().lower() for col in df.columns]
+
+            # Vérifier si les colonnes attendues sont toutes présentes
+            if all(col.lower().strip() in normalized_columns for col in expected_columns):
+                print(f"Found expected columns at header line {header_line + 1}")
+                return df  # Retourne le DataFrame si les en-têtes sont corrects
+
+            # Sinon, les colonnes attendues ne sont pas toutes présentes, supprimer la première ligne si possible
+            if len(df) > 1:  # Vérifie s'il y a plus d'une ligne avant de supprimer la première
+                df.drop(df.index[0], inplace=True)
+                # Enregistrer le DataFrame sans la première ligne comme nouveau fichier Excel et réessayer
+                df.to_excel(filepath, index=False)
+            else:
+                continue  # Si moins de deux lignes, passer à l'itération suivante
+        except Exception as e:
+            raise ValueError(f"Error processing file '{filepath}': {str(e)}")
 
     # Si les colonnes attendues ne sont pas trouvées après max_header_lines tentatives
-    raise ValueError(f"Could not find the required columns after checking {max_header_lines} lines.")
+    raise ValueError(
+        f"Could not find the required columns in file '{filepath}' after checking {max_header_lines} lines.")
+
+def cleanup(df_file1, df_file2):
+    global ref_entry1
+    global date_entry1
+    global ref_entry2
+    global date_entry2
+    # Nettoyage des noms de colonnes et des entrées de référence et de date
+    ref_entry1 = ref_entry1.strip().lower()
+    date_entry1 = date_entry1.strip().lower()
+    ref_entry2 = ref_entry2.strip().lower()
+    date_entry2 = date_entry2.strip().lower()
+    df_file1.columns = [col.strip().lower() for col in df_file1.columns]
+    df_file2.columns = [col.strip().lower() for col in df_file2.columns]
+    print(df_file1.columns)
+
+def rename_columns(df, original_name, new_name):
+        if original_name in df.columns:
+            df.rename(columns={original_name: new_name}, inplace=True)
+        else:
+            raise ValueError(f"Column {original_name} not found in the DataFrame")
+
+def keep_eight_digits(series):
+        series_as_str = series.astype(str)
+        # Modifier pour extraire la première séquence de 8 chiffres ne commençant pas avec 0
+        extracted = series_as_str.str.extract('([1-9]\d{7})')[0]
+        # Remplace par la séquence extraite si elle est trouvée, sinon conserve la valeur originale
+        return series.where(extracted.isna(), extracted)
+
+def save_excel(df_output):
+    # Demander à l'utilisateur l'emplacement et le nom du fichier Excel à enregistrer
+    save_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx")])
+    if save_path:
+        temp_file = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)  # Créer un nom de fichier temporaire
+        format_excel(df_output, temp_file.name)  # Formatage du fichier Excel temporaire
+
+        # Enregistrer le fichier temporaire à l'emplacement spécifié par l'utilisateur
+        shutil.copyfile(temp_file.name, save_path)
+        temp_file.close()
+        os.unlink(temp_file.name)
+
+        os.startfile(save_path)  # Ouvrir le fichier après l'enregistrement
+        # messagebox.showinfo("Success", "Excel file saved successfully. It will now be opened.")
+        print("\nFormatted Excel file saved successfully.")
+
+    root.update()
 
 # ======================================== Fonctions utilitaires =====================================================
 def format_excel(df_output, excel_file):
@@ -339,15 +373,15 @@ def center_window(window, width, height):
     y = (screen_height - height) // 2
     window.geometry(f"{width}x{height}+{x}+{y}")
 
-def update_image(image_label, image, angle):
-    if not image_label.winfo_exists():
+def update_image(image_label, image, angle, rotation, state):
+    if not image_label.winfo_exists() or not state:
         return
 
     rotated_image2 = image.rotate(angle)  # Faire pivoter l'image
     rotated_image_tk = ImageTk.PhotoImage(rotated_image2)  # Convertir l'image en format Tkinter
     image_label.configure(image=rotated_image_tk)  # Mettre à jour l'image affichée dans le label
     image_label.image = rotated_image_tk  # Garder une référence à l'image pour éviter la suppression par le garbage collector
-    root.after(20, update_image, image_label, image, angle-2)  # Appeler cette fonction après 500 millisecondes avec un angle augmenté
+    root.after(20, update_image, image_label, image, angle-rotation, rotation, state)  # Appeler cette fonction après 200 millisecondes avec un angle augmenté
 
 def generate_color_transition(start_hex, end_hex, steps):
     start_rgb = [int(start_hex[i1:i1+2], 16) for i1 in range(1, 6, 2)]
@@ -407,7 +441,7 @@ def show_progress_dialog():
     image_label.pack()
 
     # Mettre à jour l'image affichée dans le label avec une rotation toutes les 500 millisecondes
-    update_image(image_label, image, 90)
+    update_image(image_label, image, 90, 2, True)
 
     return progress_dialog
 
@@ -588,7 +622,7 @@ def update_selected_preset(preset):
             ref_entry2_var.set(ref_entry2)
             date_entry2_var.set(date_entry2)
             # Imprimer les valeurs mises à jour pour vérification
-            print("ref1: ", ref_entry1, " - ref2: ", date_entry1, "\ndate1:", ref_entry2, " - date2:", date_entry2)
+            print("ref1: ", ref_entry1,"\nref2: ", date_entry1,"\ndate1:", ref_entry2,"\ndate2:", date_entry2, "\n")
     except FileNotFoundError:
         # Si le fichier du preset sélectionné n'est pas trouvé, laisser les variables inchangées
         print("Preset data file not found for", preset)
@@ -649,13 +683,17 @@ for i in range(7):
 
 # Création des widgets
 bg_path = os.path.join(bdd, 'intro1.png')
-bg_img = tk.PhotoImage(file=bg_path)
-bg_img = bg_img.subsample(1)
+bg_image = Image.open(bg_path)
+bg_img = ImageTk.PhotoImage(bg_image)  # Conversion en format compatible Tkinter
 
 # Créer une étiquette pour l'image de fond
 bg_label = tk.Label(root, image=bg_img, bg=color1)
+bg_label.image = bg_img  # Empêcher le garbage collection de l'image
 bg_label.grid(row=0, column=0, rowspan=7, columnspan=7, sticky="nsew")  # Spanning sur toute la grille
 bg_label.lower()
+
+# Démarrer l'animation de l'image de fond
+#  update_image (bg_label, bg_image, 90, 0.1, True)
 
 # Ajouter une étiquette pour afficher le nom du fichier sélectionné
 file_label1 = tk.Label(root, text="", font=font_mini, bg=color1, fg=color2, padx=0, pady=0, wraplength=200)
