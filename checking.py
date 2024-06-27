@@ -1,49 +1,50 @@
 # ========================================= Import des bibliothèques ==============================================
-import tkinter.messagebox as messagebox
-import openpyxl
-import threading
-import pandas as pd
-import numpy as np
-import json
-import sys
-import itertools
 import os
-import shutil
+import sys
+import json
 import tempfile
+import threading
+import itertools
 
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, ttk, messagebox
+
+import pandas as pd
+import numpy as np
 from PIL import Image, ImageTk
+import openpyxl
+from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
+from openpyxl.chart import LineChart, BarChart, Reference
+from openpyxl.chart.label import DataLabelList
+
 
 # =============================================== CONFIGURATIONS ==================================================
+# Configuration générale
 bdd = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-file1 = None
-file2 = None
+file1 = file2 = rotated_image = preset = None
+
+# Couleurs
 color1 = '#012B65'
 color2 = '#90CBFB'
 color3 = '#FFC559'
-font_segoe_ui = ("Segoe UI", 9)
-font_mini = ("Book Antiqua", 9)
-font_style = ("Book Antiqua", 15, "bold")
-font_title = ("Book Antiqua", 24, "bold")
-ref_entry1 = ""
-date_entry1 = ""
-ref_entry2 = ""
-date_entry2 = ""
-rotated_image = None
+
+# Polices
+font_mini = ("Segoe UI", 9)
+font_button = ("Segoe UI", 10, "bold")
+font_style = ("Segoe UI", 15, "bold")
+font_title = ("Segoe UI", 24, "bold")
+
+# Entrées
+ref_entry1 = date_entry1 = ref_entry2 = date_entry2 = ""
 
 # =============================================== Fonction Principale ===============================================
 
 # Créer une colonne pour les doublons !
 def merge_files():
-    global ref_entry1
-    global date_entry1
-    global ref_entry2
-    global date_entry2
+    global ref_entry1, date_entry1, ref_entry2, date_entry2, checkbox_state1, checkbox_state2
 
-    # Checker si tout va bien
     if not check_the_parameters():
         print("Wrong Parameters.")
         return
@@ -54,24 +55,26 @@ def merge_files():
     expected_columns1 = [ref_entry1.lower().strip(), date_entry1.lower().strip()]
     expected_columns2 = [ref_entry2.lower().strip(), date_entry2.lower().strip()]
 
-    # Afficher la boîte de dialogue de progression
     progress_dialog = show_progress_dialog()
 
     try:
-        # Lecture des fichiers Excel avec ajustement d'en-tête si nécessaire
         df_file1 = read_excel_file(file1, expected_columns1)
+    except ValueError as e:
+        print(e)
+        progress_dialog.destroy()
+        messagebox.showwarning("Invalid Excel file",f"Columns not found in '{os.path.basename(file1)}'")
+        return
+
+    try:
         df_file2 = read_excel_file(file2, expected_columns2)
     except ValueError as e:
         print(e)
         progress_dialog.destroy()
-        faulty_file = file1 if 'file1' in str(e) else file2
-        messagebox.showwarning("Invalid Excel file",
-                               f"Your Excel File : '{os.path.basename(faulty_file)}' is weird, use another one.")
-        return  # Stopper l'exécution en cas d'erreur
-    # Nettoyer les noms de colonnes et les entrées de référence et de date
+        messagebox.showwarning("Invalid Excel file",f"Columns not found in'{os.path.basename(file2)}'")
+        return
+
     cleanup(df_file1, df_file2)
 
-    # Appliquer le renommage
     try:
         rename_columns(df_file1, ref_entry1, 'REFERENCE')
         rename_columns(df_file1, date_entry1, 'COMPARE')
@@ -80,24 +83,18 @@ def merge_files():
     except ValueError as e:
         print(e)
         progress_dialog.destroy()
-        return  # Stopper l'exécution si une colonne n'est pas trouvée
+        return
 
-    print("\nType file 1:", df_file1['COMPARE'].dtype)
-    print("\nType file 2:", df_file2['COMPARE'].dtype)
-
-    # Application de la fonction aux colonnes REFERENCE avant le merge
     df_file1['REFERENCE'] = keep_eight_digits(df_file1['REFERENCE'])
     df_file2['REFERENCE'] = keep_eight_digits(df_file2['REFERENCE'])
 
-    # Marquer les doublons dans chaque fichier
+    # Marquer les doublons dans les deux fichiers
     df_file1['is_duplicate'] = df_file1.duplicated(subset=['REFERENCE'], keep=False)
     df_file2['is_duplicate'] = df_file2.duplicated(subset=['REFERENCE'], keep=False)
 
-    # Suppression des doublons basée uniquement sur la colonne 'REFERENCE'
     df_file1 = df_file1.drop_duplicates(subset=['REFERENCE'], keep='last')
     df_file2 = df_file2.drop_duplicates(subset=['REFERENCE'], keep='last')
 
-    # Vérification du type de données dans les colonnes à comparer
     if df_file1['COMPARE'].dtype == 'datetime64[ns]':
         df_file1['COMPARE'] = pd.to_datetime(df_file1['COMPARE'], errors='coerce', format='%d/%m/%Y')
     if df_file2['COMPARE'].dtype == 'datetime64[ns]':
@@ -106,51 +103,56 @@ def merge_files():
     df_file1 = apply_date_conversion(df_file1, ['COMPARE'])
     df_file2 = apply_date_conversion(df_file2, ['COMPARE'])
 
-    # ----------------------------------------------------------------------------------
-    # Fusionner les deux DataFrames sur la colonne 'Doc_Achat'
-    df_merged = pd.merge(df_file1, df_file2, on='REFERENCE', suffixes=('_1', '_2'))
+    if checkbox_state1.get() and checkbox_state2.get():
+        df_merged = pd.merge(df_file1, df_file2, on='REFERENCE', suffixes=('_1', '_2'), how='outer')
+    elif checkbox_state1.get() and not checkbox_state2.get():
+        df_merged = pd.merge(df_file1, df_file2, on='REFERENCE', suffixes=('_1', '_2'), how='left')
+    elif checkbox_state2.get() and not checkbox_state1.get():
+        df_merged = pd.merge(df_file1, df_file2, on='REFERENCE', suffixes=('_1', '_2'), how='right')
+    else:
+        df_merged = pd.merge(df_file1, df_file2, on='REFERENCE', suffixes=('_1', '_2'), how='inner')
 
-    # Ajouter une colonne pour indiquer si la référence avait des doublons dans l'un des fichiers ou les deux
     df_merged['Duplicates ?'] = (df_merged['is_duplicate_1'] | df_merged['is_duplicate_2'])
     df_merged['Duplicates ?'] = df_merged['Duplicates ?'].map({True: 'Yes', False: 'No'})
 
-    # TEST LOGIQUE 1 ! Comparer si les colonnes sont identiques
-    df_merged['Result'] = np.where(df_merged['COMPARE_1'] == df_merged['COMPARE_2'], 'identical', 'different')
+    # Logique pour marquer les lignes comme 'missing', 'identical' ou 'different'
+    df_merged['Result'] = np.where(
+        (df_merged['REFERENCE'].isna()) | (df_merged['REFERENCE'].isnull()),
+        'missing',
+        np.where(
+            (df_merged['REFERENCE'].isin(df_file1['REFERENCE']) & ~df_merged['REFERENCE'].isin(df_file2['REFERENCE'])),
+            f'missing in {name2}',
+            np.where(
+                (~df_merged['REFERENCE'].isin(df_file1['REFERENCE']) & df_merged['REFERENCE'].isin(df_file2['REFERENCE'])),
+                f'missing in {name1}',
+                np.where(
+                    (df_merged['COMPARE_1'].isna() & df_merged['COMPARE_2'].isna()) | (df_merged['COMPARE_1'] == df_merged['COMPARE_2']),
+                    'identical',
+                    'different'
+                )
+            )
+        )
+    )
 
-    # Convertir 'COMPARE_1' et 'COMPARE_2' en datetime, avec 'coerce' pour gérer les non-dates
+    # Insérer une croix rouge pour les cases de comparaison manquantes
+    df_merged['COMPARE_1'] = np.where((df_merged['Result'] == f'missing in {name1}'), 'X', df_merged['COMPARE_1'])
+    df_merged['COMPARE_2'] = np.where((df_merged['Result'] == f'missing in {name2}'), 'X', df_merged['COMPARE_2'])
+
     df_merged['COMPARE_1_datetime'] = pd.to_datetime(df_merged['COMPARE_1'], errors='coerce', format='%d.%m.%Y')
     df_merged['COMPARE_2_datetime'] = pd.to_datetime(df_merged['COMPARE_2'], errors='coerce', format='%d.%m.%Y')
 
-    # TEST LOGIQUE 2 ! Calculer la différence en jours où les deux colonnes sont des dates
     df_merged['Difference'] = (df_merged['COMPARE_2_datetime'] - df_merged['COMPARE_1_datetime']).dt.days
 
-    # Garder les lignes où au moins une des deux colonnes COMPARE n'est pas NaN
-    df_filtered = df_merged[(df_merged['COMPARE_1'].notna()) | (df_merged['COMPARE_2'].notna())]
-
-    # Nom de colonne normalisé pour "Reception date of Last SFR"
-    special_column_name = "reception date of last sfr".strip().lower()
-
-    # Vérifier si cette colonne existe dans df_file1
-    if special_column_name in df_file1.columns:
-        df_merged[special_column_name] = df_file1[special_column_name]
-
-    # Renommer les colonnes
-    df_output = df_filtered[['REFERENCE', 'COMPARE_1', 'COMPARE_2', 'Result', 'Difference', 'Duplicates ?']].copy()
-
-    # Si la colonne spéciale a été ajoutée, incluez-la également dans df_output
-    if special_column_name in df_merged.columns:
-        df_output[special_column_name] = df_merged[special_column_name]
-        df_output[special_column_name] = pd.to_datetime(df_output[special_column_name], errors='coerce')
-        df_output[special_column_name] = df_output[special_column_name].dt.strftime('%d.%m.%Y')
+    df_output = df_merged[['REFERENCE', 'COMPARE_1', 'COMPARE_2', 'Result', 'Difference', 'Duplicates ?']].copy()
 
     df_output.rename(
         columns={'REFERENCE': ref_entry1_var.get(), 'COMPARE_1': f"{date_entry1_var.get()} \n({name1})",
                  'COMPARE_2': f"{date_entry2_var.get()} \n({name2})"}, inplace=True)
 
-    # Fermer la fenêtre d'attente
     progress_dialog.destroy()
 
-    save_excel(df_output)  # Enregistrer les résultats dans un fichier Excel
+    save_excel_with_customized_charts(df_output, selected_preset.get())
+
 
 def check_the_parameters():
     if file1 is None or file2 is None:
@@ -170,45 +172,48 @@ def check_the_parameters():
 
     return True
 
-def read_excel_file(filepath, expected_columns):
-    # Essayez de lire les en-têtes sur plusieurs lignes si nécessaire
-    max_header_lines = 10  # nombre maximal de lignes à vérifier pour l'en-tête
+def get_active_sheet_name(filepath):
+    workbook = load_workbook(filename=filepath, read_only=True, keep_links=False)
+    return workbook.active.title
 
-    for header_line in range(max_header_lines):
+def read_excel_file(filepath, expected_columns, sheet_name=None):
+    if sheet_name is None:
+        sheet_name = get_active_sheet_name(filepath)
+
+    countmax = 0
+    missing_columns = expected_columns  # Initialisation pour éviter l'erreur de référence avant assignation
+    while countmax < 11:
         try:
-            # Lire les en-têtes potentiels
-            df = pd.read_excel(filepath, header=header_line)
+            df = pd.read_excel(filepath, header=countmax, sheet_name=sheet_name)
 
             if df.empty:
+                countmax += 1
                 continue  # Si le DataFrame est vide, passer à l'itération suivante
 
-            # Obtenir les noms de colonnes normalisés du DataFrame
+            # Ignorer les lignes entièrement vides
+            df.dropna(how='all', inplace=True)
+
+            if df.empty:
+                countmax += 1
+                continue  # Si le DataFrame est vide après suppression des lignes vides, passer à l'itération suivante
+
             normalized_columns = [str(col).strip().lower() for col in df.columns]
+            missing_columns = [col for col in expected_columns if col.lower().strip() not in normalized_columns]
 
-            # Vérifier si les colonnes attendues sont toutes présentes
-            if all(col.lower().strip() in normalized_columns for col in expected_columns):
-                print(f"Found expected columns at header line {header_line + 1}")
-                return df  # Retourne le DataFrame si les en-têtes sont corrects
+            if not missing_columns:
+                print(f"Found expected columns at header line {countmax}.")
+                return df
 
-            # Sinon, les colonnes attendues ne sont pas toutes présentes, supprimer la première ligne si possible
-            if len(df) > 1:  # Vérifie s'il y a plus d'une ligne avant de supprimer la première
-                df.drop(df.index[0], inplace=True)
-                # Enregistrer le DataFrame sans la première ligne comme nouveau fichier Excel et réessayer
-                df.to_excel(filepath, index=False)
-            else:
-                continue  # Si moins de deux lignes, passer à l'itération suivante
+            countmax += 1
         except Exception as e:
             raise ValueError(f"Error processing file '{filepath}': {str(e)}")
 
-    # Si les colonnes attendues ne sont pas trouvées après max_header_lines tentatives
-    raise ValueError(
-        f"Could not find the required columns in file '{filepath}' after checking {max_header_lines} lines.")
+    if missing_columns:  # Vérifiez que missing_columns a été définie
+        raise ValueError(
+            f"Could not find the required columns in file '{filepath}'. Missing columns: {', '.join(missing_columns)}.")
 
 def cleanup(df_file1, df_file2):
-    global ref_entry1
-    global date_entry1
-    global ref_entry2
-    global date_entry2
+    global ref_entry1, date_entry1, ref_entry2, date_entry2
     # Nettoyage des noms de colonnes et des entrées de référence et de date
     ref_entry1 = ref_entry1.strip().lower()
     date_entry1 = date_entry1.strip().lower()
@@ -231,94 +236,203 @@ def keep_eight_digits(series):
         # Remplace par la séquence extraite si elle est trouvée, sinon conserve la valeur originale
         return series.where(extracted.isna(), extracted)
 
-def save_excel(df_output):
-    # Demander à l'utilisateur l'emplacement et le nom du fichier Excel à enregistrer
+def save_excel_with_customized_charts(df_output, sheet_name):
     save_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx")])
     if save_path:
-        temp_file = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)  # Créer un nom de fichier temporaire
-        format_excel(df_output, temp_file.name)  # Formatage du fichier Excel temporaire
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as temp_file:
+                temp_file_name = temp_file.name
+                format_excel(df_output, temp_file_name, sheet_name)
 
-        # Enregistrer le fichier temporaire à l'emplacement spécifié par l'utilisateur
-        shutil.copyfile(temp_file.name, save_path)
-        temp_file.close()
-        os.unlink(temp_file.name)
+            workbook = openpyxl.load_workbook(temp_file_name)
+            sheet = workbook[sheet_name]
 
-        os.startfile(save_path)  # Ouvrir le fichier après l'enregistrement
-        # messagebox.showinfo("Success", "Excel file saved successfully. It will now be opened.")
-        print("\nFormatted Excel file saved successfully.")
+            # Ajouter les graphiques
+            bar_chart = add_bar_chart(sheet)
+            sheet.add_chart(bar_chart, "H2")
+
+            # Vérifiez si la colonne "Difference" n'est pas vide avant d'ajouter le graphique en ligne
+            if not df_output['Difference'].isnull().all():
+                line_chart = add_line_chart(sheet)
+                sheet.add_chart(line_chart, "H19")
+
+            workbook.save(save_path)
+            print("\nFormatted Excel file with customized charts saved successfully.")
+
+        finally:
+            if os.path.exists(temp_file_name):
+                try:
+                    os.unlink(temp_file_name)
+                except PermissionError as e:
+                    print(f"Erreur lors de la suppression du fichier temporaire: {e}")
+
+        os.startfile(save_path)
+        return save_path
 
     root.update()
+    return None
+
+def add_bar_chart(sheet):
+    # Créer un graphique à barres pour les résultats 'identical', 'different', 'missing', 'duplicates'
+    values = [0, 0, 0, 0]
+
+    for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=4, max_col=4):
+        if row[0].value == 'identical':
+            values[0] += 1
+        elif row[0].value == 'different':
+            values[1] += 1
+        elif row[0].value and row[0].value.startswith('missing'):
+            values[2] += 1
+
+    for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=6, max_col=6):
+        if row[0].value == 'Yes':
+            values[3] += 1
+
+    data = [
+        ['Category', 'Count'],
+        ['Identical', values[0]],
+        ['Different', values[1]],
+        ['Missing', values[2]],
+        ['Duplicates', values[3]]
+    ]
+
+    data_sheet = sheet.parent.create_sheet(title="TempSheetForBar")
+    for row in data:
+        data_sheet.append(row)
+
+    chart = BarChart()
+    chart.title = "Comparison Results"
+    chart.style = 12
+    chart.y_axis.title = 'Count'
+    chart.x_axis.title = ''  # Enlever le titre de l'axe des catégories
+
+    # Les couleurs et les catégories
+    fill_colors = ["B0DBF1", "FFC7CE", "A9A9A9", "FF6666"]  # Identical, Different, Missing, Duplicates
+    categories = ['Identical', 'Different', 'Missing', 'Duplicates']
+
+    # Ajouter les données et appliquer les couleurs et les labels
+    for inum, (color, category) in enumerate(zip(fill_colors, categories)):
+        val_ref = Reference(data_sheet, min_row=1, max_row=len(categories) + 1, min_col=inum + 2, max_col=inum + 2)
+        chart.add_data(val_ref, titles_from_data=True)  # Ajouter les données avec les titres
+
+        series = chart.series[inum]
+        series.graphicalProperties.solidFill = color
+
+        # Ajouter le label à chaque série
+        series.dLbls = DataLabelList()
+        series.dLbls.showVal = True
+        series.dLbls.showCatName = False  # Désactiver les noms de catégories dans les étiquettes de données
+
+    # Ajouter les catégories comme labels sous les barres
+    cat_ref = Reference(data_sheet, min_col=1, min_row=2, max_row=len(categories) + 1)
+    chart.set_categories(cat_ref)
+
+    chart.legend = None  # Enlever la légende à droite
+
+    # Ajuster les espacements et le chevauchement des barres pour les centrer
+    chart.gapWidth = 150  # Ajuster l'espacement entre les barres (plus petite valeur pour moins d'espace)
+    chart.overlap = 100  # Ajuster le chevauchement pour les centrer
+
+    return chart
+
+def add_line_chart(sheet):
+    # Créer un graphique en ligne pour les différences
+    difference_col = Reference(sheet, min_col=5, min_row=2, max_row=sheet.max_row)
+
+    chart = LineChart()
+    chart.style = 12
+    chart.title = "Date differences overview"
+    chart.y_axis.title = 'Number of days'
+    # Enlever les labels de l'axe x
+    chart.x_axis.delete = True
+
+    chart.add_data(difference_col, titles_from_data=True)
+    chart.dataLabels = DataLabelList()
+    chart.dataLabels.showVal = False
+
+    # Ajuster les propriétés du graphique
+    chart.y_axis.majorGridlines = None
+    chart.x_axis.majorGridlines = None
+    chart.y_axis.titleFont = Font(size=12, bold=True, color="000000")
+    chart.legend = None  # Enlever la légende à droite
+
+    return chart
+
+
 
 # ======================================== Fonctions utilitaires =====================================================
-def format_excel(df_output, excel_file):
-    # Exporter le DataFrame vers un fichier Excel
+def format_excel(df_output, excel_file, sheet_name):
     df_output.to_excel(excel_file, index=False)
-
-    # Charger le fichier Excel pour modifier avec openpyxl
     workbook = openpyxl.load_workbook(excel_file)
     ws = workbook.active
+    ws.title = sheet_name  # Renommer la feuille active
 
-    # Styles existants
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="5B9BD5", end_color="5B9BD5", fill_type="solid")
     data_fill = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")
-    data_font = Font(color="000000")  # Noir
+    data_font = Font(color="000000")
+    fill_identical = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    fill_different = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    fill_missing = PatternFill(start_color="A9A9A9", end_color="A9A9A9", fill_type="solid")
+    fill_red_bright = PatternFill(start_color="FF6666", end_color="FF6666", fill_type="solid")
+    red_font = Font(color="FF0000", bold=True)
 
-    # Appliquer le style aux données et ajuster la largeur des colonnes
     max_width = 27
     for column_cells in ws.columns:
         length = max(len(str(cell.value)) for cell in column_cells)
-        adjusted_width = min(length, max_width)  # Ajuster la largeur à un maximum
+        adjusted_width = min(length, max_width)
         ws.column_dimensions[get_column_letter(column_cells[0].column)].width = (adjusted_width + 2) * 1.2
-        ws.row_dimensions[1].height = 43  # Cette valeur peut être ajustée selon vos besoins
+        ws.row_dimensions[1].height = 43
 
         for cell in column_cells:
             cell.fill = data_fill
             cell.font = data_font
             cell.alignment = Alignment(horizontal='center', vertical='center')
 
-    # Couleurs pour les lignes basées sur la colonne 'Result'
-    fill_identical = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")  # Vert clair
-    fill_different = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")  # Rouge clair
-
-    # Trouver l'index de la colonne 'Result'
     result_col_idx = None
+    duplicates_col_idx = None
     for idx, cell in enumerate(ws[1], start=1):
         if cell.value == 'Result':
             result_col_idx = idx
-            break
+        if cell.value == 'Duplicates ?':
+            duplicates_col_idx = idx
 
-    # Appliquer les couleurs
     if result_col_idx:
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-            result_cell = row[result_col_idx - 1]  # Ajuster l'index
-            fill = fill_identical if result_cell.value == 'identical' else fill_different
+            result_cell = row[result_col_idx - 1]
+            if result_cell.value == 'identical':
+                fill = fill_identical
+            elif result_cell.value == 'different':
+                fill = fill_different
+            else:
+                fill = fill_missing
             for cell in row:
                 cell.fill = fill
+                if cell.value == 'X':
+                    cell.font = red_font
 
-    # Appliquer le style au header
+    if duplicates_col_idx:
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            duplicates_cell = row[duplicates_col_idx - 1]
+            if duplicates_cell.value == 'Yes':
+                duplicates_cell.fill = fill_red_bright  # Appliquer le remplissage rouge uniquement à la cellule "Yes"
+
     for cell in ws[1]:
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal='center', vertical='center', wrapText=True)
 
-    # Sauvegarder les modifications
     workbook.save(excel_file)
 
 def apply_date_conversion(df, date_columns):
-    # Liste de formats de dates à essayer
-    date_formats = ["%d/%m/%Y", "%d.%m.%Y"]
+    date_formats = ["%d/%m/%Y", "%d.%m.%Y", "%Y.%m.%d", "%Y/%m/%d"]
 
     def convert_dates(value):
-        # Essayer de convertir la date en utilisant les différents formats
         for date_format in date_formats:
             try:
                 return pd.to_datetime(value, format=date_format, errors='raise').strftime('%d.%m.%Y')
             except (ValueError, TypeError):
-                # Si la conversion échoue, ignorer l'erreur et essayer le format suivant
                 pass
-
-        # Si aucun format ne convient, retourner la valeur originale
         return value
 
     for col in date_columns:
@@ -326,20 +440,12 @@ def apply_date_conversion(df, date_columns):
     return df
 
 def add_date_difference_column(df_merge):
-    # Assurez-vous que df_merge est une copie distincte pour éviter les avertissements
     df_temp = df_merge.copy()
-
-    # Convertir les colonnes 'COMPARE_1' et 'COMPARE_2' en datetime
     df_merge['COMPARE_1'] = pd.to_datetime(df_merge['COMPARE_1'], format="%d/%m/%Y", errors='coerce')
     df_merge['COMPARE_2'] = pd.to_datetime(df_merge['COMPARE_2'], format="%d/%m/%Y", errors='coerce')
-
-    # Initialiser la nouvelle colonne avec des NaN
     df_temp['Date_difference'] = pd.NaT
-
-    # Calculer la différence en jours là où les deux colonnes sont des dates valides
     mask = df_merge['COMPARE_1'].notna() & df_merge['COMPARE_2'].notna()
     df_temp.loc[mask, 'Date_difference'] = (df_merge.loc[mask, 'COMPARE_2'] - df_merge.loc[mask, 'COMPARE_1']).dt.days
-
     return df_temp
 
 def on_enter1(event):
@@ -388,9 +494,9 @@ def generate_color_transition(start_hex, end_hex, steps):
     end_rgb = [int(end_hex[i1:i1+2], 16) for i1 in range(1, 6, 2)]
     transition = [
         "#" + "".join(
-            ["{:02x}".format(int(start_rgb[j] + ((end_rgb[j] - start_rgb[j]) * i / (steps-1))))
+            ["{:02x}".format(int(start_rgb[j] + ((end_rgb[j] - start_rgb[j]) * i1 / (steps-1))))
              for j in range(3)]
-        ) for i in range(steps)
+        ) for i1 in range(steps)
     ]
     return transition
 
@@ -398,6 +504,176 @@ def change_color():
     new_color = next(colors_cycle)
     bg_label.config(bg=new_color)
     root.after(200, change_color)  # Planifier le changement de couleur
+
+def merge_files_with_progress_dialog():
+    # Démarrer un thread pour exécuter la fonction merge_files en arrière-plan
+    merge_thread = threading.Thread(target=merge_files)
+    merge_thread.start()
+
+
+def update_button_state():
+    global ref_entry1, date_entry1, ref_entry2, date_entry2
+    if file1:
+        btn_select_file1.config(bg=color1, fg=color2)
+    if file2:
+        btn_select_file2.config(bg=color1, fg=color2)
+    if file1 and file2 and selected_preset.get() != "Select your preset":
+        btn_merge_files.config(state=tk.NORMAL, bg=color3,
+                               fg=color1)  # Activer le bouton et changer la couleur de fond,
+    else:
+        btn_merge_files.config(state=tk.NORMAL, bg=color2,
+                               fg="gray")  # Désactiver le bouton et changer la couleur de fond
+
+    # Save the state
+    save_last_state(file1, file2, selected_preset.get())
+
+def save_button_data(button_index, title, ref_col_name_1, ref_col_name_2, date_col_name_1, date_col_name_2, checkbox_state_1, checkbox_state_2):
+    button_datas = {
+        "Title": title,
+        "Ref_Column_Name_1": ref_col_name_1,
+        "Ref_Column_Name_2": ref_col_name_2,
+        "Date_Column_Name_1": date_col_name_1,
+        "Date_Column_Name_2": date_col_name_2,
+        "Checkbox_State_1": checkbox_state_1,
+        "Checkbox_State_2": checkbox_state_2
+    }
+    # print(title, ref_col_name_1, date_col_name_1, ref_col_name_2, date_col_name_2, checkbox_state_1, checkbox_state_2)
+    with open(f'button_{button_index}_data.txt', 'w') as fff:
+        json.dump(button_datas, fff)
+
+def update_selected_preset(the_preset, menu_color):
+    global ref_entry1
+    global ref_entry2
+    global date_entry1
+    global date_entry2
+    global checkbox_state1
+    global checkbox_state2
+
+    print("Selected preset:", the_preset)
+
+    # Vérifier si le preset est valide
+    if the_preset not in button_texts:
+        print(f"Preset {the_preset} is not valid.")
+        return
+
+    # Réinitialiser la couleur de tous les boutons
+    for button in buttons_list:
+        button.config(bg=color2, fg=color1)
+
+    # Trouver l'index du preset sélectionné dans la liste des titres des boutons
+    selected_index = button_texts.index(the_preset)
+
+    # Changer la couleur du bouton associé au preset sélectionné
+    buttons_list[selected_index].config(bg=color3, fg=color1)
+
+    # Changer le texte sélectionné dans le menu déroulant
+    selected_preset.set(button_texts[selected_index])
+
+    # Changer la couleur du menu
+    menu_color.config(bg=color1, font=font_style, fg=color2, bd=1)  # Appliquer les styles ici
+
+    # Petite condition
+    if file1 and file2 and selected_preset.get() != "Select your preset":
+        btn_merge_files.config(bg=color3, fg=color1)  # Si les deux fichiers sont sélectionnés + le preset, le bouton devient jaune
+
+    try:
+        # Charger les données depuis le fichier texte correspondant au titre du preset sélectionné
+        with open(f'button_{button_texts.index(the_preset) + 1}_data.txt', 'r') as f5:
+            button_data_txt = json.load(f5)
+            ref_entry1 = button_data_txt.get("Ref_Column_Name_1", "")
+            date_entry1 = button_data_txt.get("Date_Column_Name_1", "")
+            ref_entry2 = button_data_txt.get("Ref_Column_Name_2", "")
+            date_entry2 = button_data_txt.get("Date_Column_Name_2", "")
+            # Charger les états des cases à cocher
+            checkbox_state1.set(button_data_txt.get("Checkbox_State_1", False))
+            checkbox_state2.set(button_data_txt.get("Checkbox_State_2", False))
+            # Mettre à jour les variables globales avec les nouvelles valeurs
+            ref_entry1_var.set(ref_entry1)
+            date_entry1_var.set(date_entry1)
+            ref_entry2_var.set(ref_entry2)
+            date_entry2_var.set(date_entry2)
+            # Imprimer les valeurs mises à jour pour vérification
+            print("ref1: ", ref_entry1, "\nref2: ", date_entry1, "\ndate1:", ref_entry2, "\ndate2:", date_entry2, "\nshow ref1: ",
+                  checkbox_state1.get(), "\nshow ref2:", checkbox_state2.get())
+    except FileNotFoundError:
+        # Si le fichier du preset sélectionné n'est pas trouvé, laisser les variables inchangées
+        print("Preset data file not found for", the_preset)
+
+    save_last_state(file1, file2, the_preset)
+
+    root.update()
+
+
+def update_preset_menu():
+    # Vide le menu déroulant actuel
+    preset_menu['menu'].delete(0, 'end')
+
+    # Liste pour stocker les nouveaux titres des boutons presets
+    new_button_texts = []
+
+    # Parcourez les index des boutons de 1 à 7 pour récupérer les titres des boutons presets
+    for i7 in range(1, 8):
+        try:
+            # Ouvrez le fichier correspondant au bouton et chargez les données JSON
+            with open(f'button_{i7}_data.txt', 'r') as f7:
+                button_data7 = json.load(f7)
+                title_button7 = button_data7.get("Title",
+                                               f"Preset {i7}")  # Obtenez le titre du bouton ou utilisez "Preset {i}" par défaut
+                new_button_texts.append(title_button7)  # Ajoutez le titre à la liste des textes de bouton
+        except FileNotFoundError:
+            # Si le fichier n'est pas trouvé, utilisez "Preset {i}" par défaut
+            new_button_texts.append(f"Preset {i7}")
+
+    # Mettre à jour le menu déroulant avec les nouveaux titres des boutons presets
+    for txt2 in new_button_texts:
+        preset_menu['menu'].add_command(label=txt2, command=lambda preset2=txt2: update_selected_preset(preset2, preset_menu))
+
+    # Mettre à jour la liste button_texts
+    button_texts[:] = new_button_texts
+
+    # Si un preset était déjà sélectionné, le remettre à jour avec le nouveau texte
+    selected_preset_text = selected_preset.get()
+    if selected_preset_text in new_button_texts:
+        selected_preset.set(selected_preset_text)
+        save_last_state(file1, file2, selected_preset_text)
+        print(selected_preset_text)
+
+def save_last_state(file_1, file_2, preset_):
+    if preset_ == "Select your preset":
+        preset_ = ""
+    state = {
+        'file1': file_1,
+        'file2': file_2,
+        'preset': preset_
+    }
+    with open('last_state.txt', 'w') as f2:
+        json.dump(state, f2)
+
+def load_last_state():
+    try:
+        with open('last_state.txt', 'r') as f3:
+            state = json.load(f3)
+        return state
+    except FileNotFoundError:
+        return None
+
+def reset():
+    global file1, file2, preset
+    file1 = file2 = preset = None
+    selected_preset.set("Select your preset")
+    preset_menu.config(bg=color2, font=font_style, fg=color1, bd=1)  # Appliquer les styles ici
+    file_label1.grid_remove()  # Rendre le widget invisible au départ
+    btn_select_file1.config(bg=color2, fg=color1)
+    file_label2.grid_remove()  # Rendre le widget invisible au départ
+    btn_select_file2.config(bg=color2, fg=color1)
+    btn_select_file1.bind("<Enter>", lambda event: on_enter1(event))
+    btn_select_file1.bind("<Leave>", lambda event: on_leave1(event))
+    btn_select_file2.bind("<Enter>", lambda event: on_enter1(event))
+    btn_select_file2.bind("<Leave>", lambda event: on_leave1(event))
+    btn_merge_files.config(state=tk.DISABLED, bg=color2, fg="gray")
+
+    update_button_state()
+    save_last_state(file1, file2, selected_preset.get())
 
 # =========================================== Boutons de l'interface Graphique ======================================
 def select_file1():
@@ -443,35 +719,12 @@ def show_progress_dialog():
     # Mettre à jour l'image affichée dans le label avec une rotation toutes les 500 millisecondes
     update_image(image_label, image, 90, 2, True)
 
+    # Rendre la fenêtre modale
+    # progress_dialog.transient(root)
+    # progress_dialog.grab_set()
+    # root.wait_window(progress_dialog)
+
     return progress_dialog
-
-def merge_files_with_progress_dialog():
-    # Démarrer un thread pour exécuter la fonction merge_files en arrière-plan
-    merge_thread = threading.Thread(target=merge_files)
-    merge_thread.start()
-
-def update_button_state():
-    global ref_entry1, date_entry1, ref_entry2, date_entry2
-    if file1:
-        btn_select_file1.config(bg=color1, fg=color2)
-    if file2:
-        btn_select_file2.config(bg=color1, fg=color2)
-    if file1 and file2 and selected_preset.get() != "Select your preset":
-        btn_merge_files.config(bg=color3)  # Si les deux fichiers sont sélectionnés, le bouton devient bleu
-    else:
-        btn_merge_files.config(bg=color2)  # Sinon, le bouton conserve sa couleur par défaut
-
-def save_button_data(button_index, title, ref_col_name_1, ref_col_name_2, date_col_name_1, date_col_name_2):
-    button_datas = {
-        "Title": title,
-        "Ref_Column_Name_1": ref_col_name_1,
-        "Ref_Column_Name_2": ref_col_name_2,
-        "Date_Column_Name_1": date_col_name_1,
-        "Date_Column_Name_2": date_col_name_2
-    }
-    print (title, ref_col_name_1, date_col_name_1, ref_col_name_2, date_col_name_2)
-    with open(f'button_{button_index}_data.txt', 'w') as fff:
-        json.dump(button_datas, fff)
 
 def open_button_window(button_index):
     global selected_preset
@@ -482,6 +735,8 @@ def open_button_window(button_index):
         for entry in entry_fields:
             entry.delete(0, tk.END)
         title_entry.delete(0, tk.END)  # Effacer le titre également
+        checkbox_state1.set(False)
+        checkbox_state2.set(False)
 
     # Fonction pour sauvegarder les données dans un fichier texte
     def save_data():
@@ -493,9 +748,12 @@ def open_button_window(button_index):
         ref_col_name_2 = ref_col_entries[1].get()
         date_col_name_1 = date_col_entries[0].get()
         date_col_name_2 = date_col_entries[1].get()
+        checkbox1_state = checkbox_state1.get()
+        checkbox2_state = checkbox_state2.get()
 
         # Sauvegarder les données dans le fichier texte
-        save_button_data(button_index, title, ref_col_name_1, ref_col_name_2, date_col_name_1, date_col_name_2)
+        save_button_data(button_index, title, ref_col_name_1, ref_col_name_2, date_col_name_1, date_col_name_2,
+                         checkbox1_state, checkbox2_state)
 
         # Mettre à jour le texte du bouton avec le titre entré par l'utilisateur
         button.config(text=title)
@@ -510,13 +768,13 @@ def open_button_window(button_index):
         window.destroy()
 
         # Appeler la fonction pour mettre à jour le preset sélectionné
-        update_selected_preset(title)
+        update_selected_preset(title, preset_menu)
 
     # Créer une nouvelle fenêtre
     window = tk.Toplevel(root)
     window.configure(bg=color2)
     window.title("Button Details")
-    window.geometry("290x245")
+    window.geometry("300x264")
     window.update_idletasks()
     window.update_idletasks()  # Assurer que toutes les tâches en attente sont effectuées
     screen_w = window.winfo_screenwidth()
@@ -534,28 +792,35 @@ def open_button_window(button_index):
     title_entry = tk.Entry(window, font=font_mini)
     title_entry.grid(row=0, column=1, columnspan=2, sticky="we", padx=10, pady=10)
 
-    file_label = tk.Label(window, text="File 1                                          File 2", font=("Book Antiqua", 10, "bold"), bg=color2)
+    file_label = tk.Label(window, text="File 1                                          File 2", font=font_button, bg=color2)
     file_label.grid(row=1, column=0, columnspan=3, sticky="nsew", padx=5, pady=10)
 
     ref_col_label = tk.Label(window, text="Reference column name:", font=font_mini, bg=color2)
     ref_col_label.grid(row=2, column=0, columnspan=3, sticky="nsew", padx=5, pady=0)
 
     date_col_label = tk.Label(window, text="Comparison column name:", font=font_mini, bg=color2)
-    date_col_label.grid(row=4, column=0, columnspan=3, sticky="nsew", padx=5, pady=0)
+    date_col_label.grid(row=5, column=0, columnspan=3, sticky="nsew", padx=5, pady=0)
 
     # Créer les widgets pour les colonnes de référence
     ref_col_entry1 = tk.Entry(window, font=font_mini)
-    ref_col_entry1.grid(row=3, column=0, sticky="nsew", padx=10, pady=(2,10))
+    ref_col_entry1.grid(row=3, column=0, sticky="nsew", padx=10, pady=(2,0))
 
     ref_col_entry2 = tk.Entry(window, font=font_mini)
-    ref_col_entry2.grid(row=3, column=1, sticky="nsew", padx=10, pady=(2,10))
+    ref_col_entry2.grid(row=3, column=1, sticky="nsew", padx=10, pady=(2,0))
+
+    # Créer les cases à cocher pour la ligne 4
+    checkbox1 = tk.Checkbutton(window, text="Show all references", variable=checkbox_state1, font=font_mini, bg=color2)
+    checkbox1.grid(row=4, column=0, sticky="nsew", padx=10, pady=(0,10))
+
+    checkbox2 = tk.Checkbutton(window, text="Show all references", variable=checkbox_state2, font=font_mini, bg=color2)
+    checkbox2.grid(row=4, column=1, sticky="nsew", padx=10, pady=(0,10))
 
     # Créer les widgets pour les colonnes de date
     date_col_entry1 = tk.Entry(window, font=font_mini)
-    date_col_entry1.grid(row=5, column=0, sticky="nsew", padx=10, pady=(2,10))
+    date_col_entry1.grid(row=6, column=0, sticky="nsew", padx=10, pady=(2,10))
 
     date_col_entry2 = tk.Entry(window, font=font_mini)
-    date_col_entry2.grid(row=5, column=1, sticky="nsew", padx=10, pady=(2,10))
+    date_col_entry2.grid(row=6, column=1, sticky="nsew", padx=10, pady=(2,10))
 
     # Créer les listes contenant les widgets
     ref_col_entries = [ref_col_entry1, ref_col_entry2]
@@ -573,94 +838,22 @@ def open_button_window(button_index):
             ref_col_entries[1].insert(0, button_var["Ref_Column_Name_2"])
             date_col_entries[0].insert(0, button_var["Date_Column_Name_1"])
             date_col_entries[1].insert(0, button_var["Date_Column_Name_2"])
+            checkbox_state1.set(button_var.get("Checkbox_State_1", False))
+            checkbox_state2.set(button_var.get("Checkbox_State_2", False))
     except FileNotFoundError:
         pass
 
     # Créer les boutons "clear" et "save"
-    clear_button = tk.Button(window, text="Clear", bg="red", fg="white", font=("Book Antiqua", 10, "bold"), command=clear_fields)
-    clear_button.grid(row=6, column=0, sticky="we", padx=10, pady=10)
+    clear_button = tk.Button(window, text="Clear", bg="red", fg="white", font=font_button, command=clear_fields)
+    clear_button.grid(row=7, column=0, sticky="we", padx=10, pady=10)
 
-    save_button = tk.Button(window, text="Save", bg="green", fg="white", font=("Book Antiqua", 10, "bold"), command=save_data)
-    save_button.grid(row=6, column=1, sticky="we", padx=10, pady=10)
+    save_button = tk.Button(window, text="Save", bg="green", fg="white", font=font_button, command=save_data)
+    save_button.grid(row=7, column=1, sticky="we", padx=10, pady=10)
 
-def update_selected_preset(preset):
-    global ref_entry1
-    global ref_entry2
-    global date_entry1
-    global date_entry2
-
-    print("Selected preset:", preset)
-
-    # Réinitialiser la couleur de tous les boutons
-    for button in buttons_list:
-        button.config(bg=color2, fg=color1)
-
-    # Trouver l'index du preset sélectionné dans la liste des titres des boutons
-    selected_index = button_texts.index(preset)
-
-    # Changer la couleur du bouton associé au preset sélectionné
-    buttons_list[selected_index].config(bg=color3, fg=color1)
-
-    # Changer le texte sélectionné dans le menu déroulant
-    selected_preset.set(button_texts[selected_index])
-
-    # Petite condition
-    if file1 and file2 and selected_preset.get() != "Select your preset":
-        btn_merge_files.config(bg=color3)  # Si les deux fichiers sont sélectionnés + le preset, le bouton devient jaune
-
-    try:
-        # Charger les données depuis le fichier texte correspondant au titre du preset sélectionné
-        with open(f'button_{button_texts.index(preset) + 1}_data.txt', 'r') as f5:
-            button_data_txt = json.load(f5)
-            ref_entry1 = button_data_txt.get("Ref_Column_Name_1", "")
-            date_entry1 = button_data_txt.get("Date_Column_Name_1", "")
-            ref_entry2 = button_data_txt.get("Ref_Column_Name_2", "")
-            date_entry2 = button_data_txt.get("Date_Column_Name_2", "")
-            # Mettre à jour les variables globales avec les nouvelles valeurs
-            ref_entry1_var.set(ref_entry1)
-            date_entry1_var.set(date_entry1)
-            ref_entry2_var.set(ref_entry2)
-            date_entry2_var.set(date_entry2)
-            # Imprimer les valeurs mises à jour pour vérification
-            print("ref1: ", ref_entry1,"\nref2: ", date_entry1,"\ndate1:", ref_entry2,"\ndate2:", date_entry2, "\n")
-    except FileNotFoundError:
-        # Si le fichier du preset sélectionné n'est pas trouvé, laisser les variables inchangées
-        print("Preset data file not found for", preset)
-
-    root.update()
-
-def update_preset_menu():
-    # Vide le menu déroulant actuel
-    preset_menu['menu'].delete(0, 'end')
-
-    # Liste pour stocker les nouveaux titres des boutons presets
-    new_button_texts = []
-
-    # Parcourez les index des boutons de 1 à 7 pour récupérer les titres des boutons presets
-    for i7 in range(1, 8):
-        try:
-            # Ouvrez le fichier correspondant au bouton et chargez les données JSON
-            with open(f'button_{i7}_data.txt', 'r') as f7:
-                button_data7 = json.load(f7)
-                title_button7 = button_data7.get("Title",
-                                               f"Preset {i7}")  # Obtenez le titre du bouton ou utilisez "Preset {i}" par défaut
-                new_button_texts.append(title_button7)  # Ajoutez le titre à la liste des textes de bouton
-        except FileNotFoundError:
-            # Si le fichier n'est pas trouvé, utilisez "Preset {i}" par défaut
-            new_button_texts.append(f"Preset {i7}")
-
-    # Mettre à jour le menu déroulant avec les nouveaux titres des boutons presets
-    for txt2 in new_button_texts:
-        preset_menu['menu'].add_command(label=txt2, command=lambda preset=txt2: update_selected_preset(preset))
-
-    # Mettre à jour la liste button_texts
-    button_texts[:] = new_button_texts
-
-    # Si un preset était déjà sélectionné, le remettre à jour avec le nouveau texte
-    selected_preset_text = selected_preset.get()
-    if selected_preset_text in new_button_texts:
-        selected_preset.set(selected_preset_text)
-
+    # Rendre la fenêtre modale
+    window.transient(root)
+    window.grab_set()
+    root.wait_window(window)
 
 # ================================================= Interface Graphique ============================================
 root = tk.Tk()
@@ -670,10 +863,25 @@ root.title("Merge Excel Files")
 icon_path = os.path.join(bdd, 'engine.ico')
 root.iconbitmap(icon_path)
 
+last_state = load_last_state()
+if last_state:
+    file1 = last_state.get('file1')
+    file2 = last_state.get('file2')
+    preset = last_state.get('preset')
+
+
+# Créer un style personnalisé pour l'OptionMenu
+style = ttk.Style(root)
+style.theme_use('clam')  # Vous pouvez changer de thème si vous le souhaitez
+style.configure("TMenubutton", background=color1, foreground=color2, font=font_style, padding=5)
+style.map('TMenubutton', background=[('active', color3)], foreground=[('active', color1)])
+
 ref_entry1_var = tk.StringVar()
 date_entry1_var = tk.StringVar()
 ref_entry2_var = tk.StringVar()
 date_entry2_var = tk.StringVar()
+checkbox_state1 = tk.BooleanVar()
+checkbox_state2 = tk.BooleanVar()
 
 # Configuration de la grille
 for i in range(7):
@@ -697,45 +905,57 @@ bg_label.lower()
 
 # Ajouter une étiquette pour afficher le nom du fichier sélectionné
 file_label1 = tk.Label(root, text="", font=font_mini, bg=color1, fg=color2, padx=0, pady=0, wraplength=200)
-file_label1.grid(row=2, column=1, padx=40, pady=20, sticky="nsew")
+file_label1.grid(row=3, column=1, padx=40, pady=20, sticky="nsew")
 file_label1.grid_remove()  # Rendre le widget invisible au départ
 
 file_label2 = tk.Label(root, text="", font=font_mini, bg=color1, fg=color2, padx=0, pady=2, wraplength=200)
-file_label2.grid(row=2, column=5, padx=40, pady=20, sticky="nsew")
+file_label2.grid(row=3, column=5, padx=40, pady=20, sticky="nsew")
 file_label2.grid_remove()  # Rendre le widget invisible au départ
 
+# Bouton Reset
+btn_reset = tk.Button(root, text="Reset", command=reset, bg=color1, font=font_button,
+                      relief=tk.SOLID, bd=1, fg=color2, padx=0, pady=0, cursor="target")
+btn_reset.grid(row=0, column=0, ipadx=0, ipady=0, sticky="nsew")
+
 # Ajouter une étiquette pour expliquer ce que fait l'application
-app_explanation = tk.Label(root, text="Select two Excel files to calculate date differences based on the column of your choice.",
+app_explanation = tk.Label(root, text="Select two excel files to compare any column of your choice.",
                            font=font_style, bg=color1, fg=color2)
-app_explanation.grid(row=0, column=0, columnspan=7, sticky="nsew")
+app_explanation.grid(row=0, column=1, columnspan=6, sticky="nsew")
 
 # Bouton pour sélectionner le fichier 1
 btn_select_file1 = tk.Button(root, text="Select 1st File", command=select_file1, bg=color2, font=font_style,
-                             relief=tk.SOLID, bd=2, fg=color1, width=8, height=2, cursor="target", wraplength=200)
-btn_select_file1.grid(row=1, column=1, padx=40, pady=(20,0), sticky="nsew")
+                             relief=tk.SOLID, bd=1, fg=color1, width=8, height=2, cursor="target", wraplength=200)
+btn_select_file1.grid(row=2, column=1, padx=10, pady=(20,0), sticky="nsew")
 btn_select_file1.bind("<Enter>", lambda event: on_enter1(event))
 btn_select_file1.bind("<Leave>", lambda event: on_leave1(event))
 
 # Bouton pour sélectionner le fichier 2
 btn_select_file2 = tk.Button(root, text="Select 2nd File", command=select_file2, bg=color2, font=font_style,
-                             relief=tk.SOLID, bd=2, fg=color1, width=8, height=2, cursor="target", wraplength=200)
-btn_select_file2.grid(row=1, column=5, padx=40, pady=(20,0), sticky="nsew")
+                             relief=tk.SOLID, bd=1, fg=color1, width=8, height=2, cursor="target", wraplength=200)
+btn_select_file2.grid(row=2, column=5, padx=10, pady=(20,0), sticky="nsew")
 btn_select_file2.bind("<Enter>", lambda event: on_enter2(event))
 btn_select_file2.bind("<Leave>", lambda event: on_leave2(event))
 
 # Bouton pour lancer la fusion des données
 btn_merge_files = tk.Button(root, text="Fusion", command=merge_files_with_progress_dialog, bg=color2, font=font_title,
-                            relief=tk.SOLID, bd=2, fg=color1, width=8, height=1, cursor="target", wraplength=200)
-btn_merge_files.grid(row=1, column=3, padx=100, pady=(20,0), sticky="nsew")
-btn_merge_files.bind("<Enter>", lambda event: on_enter3(event))
-btn_merge_files.bind("<Leave>", lambda event: on_leave3(event))
+                            relief=tk.SOLID, fg="gray", bd=1, width=8, height=1, cursor="target", wraplength=200)
+btn_merge_files.grid(row=2, column=3, padx=100, pady=(20,0), sticky="nsew")
+# btn_merge_files.bind("<Enter>", lambda event: on_enter3(event))
+# btn_merge_files.bind("<Leave>", lambda event: on_leave3(event))
 
 #-------------------------------------------------- PRESETS-------------------------------------------------------------
-preset_frame = tk.Frame(root, bg=color1, bd=2, relief=tk.SOLID)
-preset_frame.grid(row=6, column=0, columnspan=7, sticky="nsew")
+toggle_button = tk.Button(root, text="▲  Presets  ▲", bg=color2, font=font_mini,
+                          relief=tk.SOLID, bd=1, fg=color1, width=8, height=1, cursor="hand2")
+toggle_button.grid(row=6, rowspan=2, column=0, columnspan=7, pady=(5, 0), sticky="nsew")
+toggle_button.bind("<Enter>", lambda event: preset_frame.grid())
 
-preset_label = tk.Label(preset_frame, text="Presets", font=font_style, bg=color1, fg=color2, bd=2)
+preset_frame = tk.Frame(root, bg=color1, bd=1, relief=tk.SOLID)
+preset_frame.grid(row=6, column=0, columnspan=7, sticky="nsew")
+preset_frame.grid_remove()  # Masquer par défaut
+
+preset_label = tk.Label(preset_frame, text="Presets", font=font_style, bg=color1, fg=color2, bd=1)
 preset_label.pack(fill="x")
+preset_label.bind("<Leave>", lambda event: preset_frame.grid_remove())
 
 # Créer les boutons dans chaque colonne avec un léger padding
 button_texts = []  # Initialisez une liste vide pour stocker les titres des boutons
@@ -755,7 +975,7 @@ for i in range(1, 8):
 # Création des boutons presets
 buttons_list = []
 for i, txt in enumerate(button_texts, start=1):
-    btn = tk.Button(preset_frame, text=txt, bg=color2, font=font_mini, relief=tk.SOLID, bd=2, fg=color1, cursor="hand2", command=lambda index=i, text=txt: open_button_window(index))
+    btn = tk.Button(preset_frame, text=txt, bg=color2, font=font_mini, relief=tk.SOLID, bd=1, fg=color1, cursor="hand2", command=lambda index=i, text=txt: open_button_window(index))
     btn.pack(side="left", fill="both", expand=True, padx=10, pady=10)
     buttons_list.append(btn)
 
@@ -764,10 +984,14 @@ selected_preset = tk.StringVar(root)
 selected_preset.set("Select your preset")  # Définir la valeur par défaut
 
 # Créer le menu déroulant
-preset_menu = tk.OptionMenu(root, selected_preset, *button_texts, command=lambda preset: update_selected_preset(preset))
+preset_menu = tk.OptionMenu(root, selected_preset, *button_texts, command=lambda preset3: update_selected_preset(preset3, preset_menu))
+
+# Utiliser le widget `OptionMenu` pour accéder au menu interne et appliquer les styles
+menu = preset_menu.nametowidget(preset_menu.menuname)
+menu.configure(font=font_style, bd=1, background=color1, foreground=color2, activebackground=color3, activeforeground=color1)
 
 # Personnaliser le menu déroulant
-preset_menu.config(font=font_style, bg=color1, fg=color2, height=1)  # Modifier la police, la couleur de fond et la hauteur
+preset_menu.config(bg=color2, font=font_style, fg=color1, bd=1)  # Appliquer les styles ici
 preset_menu.grid(row=4, column=3, sticky="nsew", padx=70 , pady=(100,0))
 
 # Changer les couleurs du fond
@@ -777,6 +1001,21 @@ colors += generate_color_transition(color2, color3, 128)  # De color2 à color3
 colors += generate_color_transition(color3, color1, 128)  # De color3 à color1
 colors_cycle = itertools.cycle(colors)
 root.after(500, change_color)  # Change la couleur du fond
+
+# Appliquer l'état chargé après l'initialisation des widgets
+if last_state:
+    if file1:
+        file_label1.config(text=os.path.basename(file1), bg=color2, fg=color1)
+        update_button_state()
+        file_label1.grid()
+
+    if file2:
+        file_label2.config(text=os.path.basename(file2), bg=color2, fg=color1)
+        update_button_state()
+        file_label2.grid()
+
+    if preset:
+        update_selected_preset(preset, preset_menu)
 
 # Fin
 center_window(root, 1000, 500)  # Redimensionne la fenêtre
