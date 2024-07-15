@@ -7,7 +7,7 @@ import threading
 import itertools
 
 import tkinter as tk
-from tkinter import filedialog, ttk, messagebox
+from tkinter import filedialog, ttk, messagebox, font
 
 import pandas as pd
 import numpy as np
@@ -21,7 +21,6 @@ from openpyxl.chart.label import DataLabelList
 
 
 # =============================================== CONFIGURATIONS ==================================================
-# Configuration générale
 bdd = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
 file1 = file2 = rotated_image = preset = None
 
@@ -38,10 +37,9 @@ font_title = ("Segoe UI", 24, "bold")
 
 # Entrées
 ref_entry1 = date_entry1 = ref_entry2 = date_entry2 = ""
+help_visible = False
 
 # =============================================== Fonction Principale ===============================================
-
-# Créer une colonne pour les doublons !
 def merge_files():
     global ref_entry1, date_entry1, ref_entry2, date_entry2, checkbox_state1, checkbox_state2
 
@@ -152,7 +150,6 @@ def merge_files():
     progress_dialog.destroy()
 
     save_excel_with_customized_charts(df_output, selected_preset.get())
-
 
 def check_the_parameters():
     if file1 is None or file2 is None:
@@ -359,7 +356,6 @@ def add_line_chart(sheet):
     return chart
 
 
-
 # ======================================== Fonctions utilitaires =====================================================
 def format_excel(df_output, excel_file, sheet_name):
     df_output.to_excel(excel_file, index=False)
@@ -510,7 +506,6 @@ def merge_files_with_progress_dialog():
     merge_thread = threading.Thread(target=merge_files)
     merge_thread.start()
 
-
 def update_button_state():
     global ref_entry1, date_entry1, ref_entry2, date_entry2
     if file1:
@@ -600,9 +595,9 @@ def update_selected_preset(the_preset, menu_color):
         print("Preset data file not found for", the_preset)
 
     save_last_state(file1, file2, the_preset)
+    update_help_section()
 
     root.update()
-
 
 def update_preset_menu():
     # Vide le menu déroulant actuel
@@ -637,6 +632,7 @@ def update_preset_menu():
         selected_preset.set(selected_preset_text)
         save_last_state(file1, file2, selected_preset_text)
         print(selected_preset_text)
+        update_help_section()
 
 def save_last_state(file_1, file_2, preset_):
     if preset_ == "Select your preset":
@@ -673,7 +669,22 @@ def reset():
     btn_merge_files.config(state=tk.DISABLED, bg=color2, fg="gray")
 
     update_button_state()
+    update_help_section()
     save_last_state(file1, file2, selected_preset.get())
+
+def help_step():
+    global help_visible
+    if not help_visible:
+        help_frame.grid_remove()
+    else:
+        help_frame.grid(row=0, column=7, rowspan=7, sticky="nsew")
+        update_help_section()
+    help_visible = not help_visible
+
+def open_video():
+    video_path = os.path.join(bdd, 'example.mp4')
+    if os.path.exists(video_path):
+        os.startfile(video_path)  # Ouvrir le fichier avec l'application par défaut
 
 # =========================================== Boutons de l'interface Graphique ======================================
 def select_file1():
@@ -684,6 +695,7 @@ def select_file1():
         file_label1.config(text=os.path.basename(file1), bg=color2, fg=color1)
         update_button_state()  # Mettre à jour l'état du bouton
         file_label1.grid()  # Rendre le widget visible
+    update_help_section()
     root.update()  # Mettre à jour l'interface utilisateur
 
 def select_file2():
@@ -693,6 +705,7 @@ def select_file2():
         file_label2.config(text=os.path.basename(file2), bg=color2, fg=color1)
         update_button_state()  # Mettre à jour l'état du bouton
         file_label2.grid()  # Rendre le widget visible
+    update_help_section()
     root.update()  # Mettre à jour l'interface utilisateur
 
 def show_progress_dialog():
@@ -726,7 +739,7 @@ def show_progress_dialog():
 
     return progress_dialog
 
-def open_button_window(button_index):
+def open_preset_window(button_index):
     global selected_preset
     button = buttons_list[button_index - 1]  # -1, car les index commencent à 1, mais les listes commencent à 0.
 
@@ -792,7 +805,7 @@ def open_button_window(button_index):
     title_entry = tk.Entry(window, font=font_mini)
     title_entry.grid(row=0, column=1, columnspan=2, sticky="we", padx=10, pady=10)
 
-    file_label = tk.Label(window, text="File 1                                          File 2", font=font_button, bg=color2)
+    file_label = tk.Label(window, text="File 1                              File 2", font=font_button, bg=color2)
     file_label.grid(row=1, column=0, columnspan=3, sticky="nsew", padx=5, pady=10)
 
     ref_col_label = tk.Label(window, text="Reference column name:", font=font_mini, bg=color2)
@@ -855,9 +868,71 @@ def open_button_window(button_index):
     window.grab_set()
     root.wait_window(window)
 
+def update_help_section():
+    for widget in help_frame.winfo_children():
+        widget.destroy()
+
+    # Ajouter un titre au-dessus des étapes
+    title_label = tk.Label(help_frame, text="Step-by-Step Guide", bg=color2, fg=color1, font=("Segoe UI", 12, "bold"))
+    title_label.pack(fill='x', padx=10, pady=12)
+
+    # Modifier la police pour inclure le soulignement
+    underline_font = font.Font(title_label, title_label.cget("font"))
+    underline_font.configure(underline=True)
+    title_label.configure(font=underline_font)
+
+    steps = [
+        ("Select File 1", lambda: select_file1(), file1 is None),
+        ("Select File 2", lambda: select_file2(), file2 is None),
+        ("Select a Preset",
+         lambda: preset_menu['menu'].post(580, 450),
+         selected_preset.get() == "Select your preset" or selected_preset.get() == ""),
+        ("Title for your comparison",
+         lambda: open_preset_window(button_texts.index(selected_preset.get()) + 1),
+         "Preset" in selected_preset.get()),
+        ("Reference column in File 1",
+         lambda: open_preset_window(button_texts.index(selected_preset.get()) + 1), ref_entry1 == ""),
+        ("Reference column in File 2",
+         lambda: open_preset_window(button_texts.index(selected_preset.get()) + 1), ref_entry2 == ""),
+        ("Column to compare in File 1",
+         lambda: open_preset_window(button_texts.index(selected_preset.get()) + 1), date_entry1 == ""),
+        ("Column to compare in File 2",
+         lambda: open_preset_window(button_texts.index(selected_preset.get()) + 1), date_entry2 == ""),
+        ("Click on Fusion to compare!", lambda: btn_merge_files.invoke(),
+         not (file1 is None or file2 is None or selected_preset.get() == "Select your preset" or any(
+             not val for val in [ref_entry1, date_entry1, ref_entry2, date_entry2]))
+         )
+    ]
+
+    previous_completed = True  # Initialement, on considère que la première étape est complétée
+
+    for idx, (text, command, condition) in enumerate(steps):
+        if previous_completed:
+            if condition:
+                buttons = tk.Button(help_frame, text=text, command=lambda cmd=command: [cmd(), update_help_section()], bg=color1, font=font_button, fg=color2, cursor="hand2")
+                buttons.pack(fill='x', padx=10, pady=8)
+                buttons.bind("<Enter>", lambda event, bouttonio=buttons: bouttonio.config(bg=color2, fg=color1))  # Ajouter hover
+                buttons.bind("<Leave>", lambda event, bouttonio2=buttons: bouttonio2.config(bg=color1, fg=color2))  # Supprimer hover
+                previous_completed = False  # Si une condition n'est pas remplie, les étapes suivantes ne seront pas affichées
+            else:
+                lbl = tk.Label(help_frame, text=text, bg=color2, fg=color1, font=font_button)
+                lbl.pack(fill='x', padx=10, pady=8)
+        else:
+            break  # Si une étape n'est pas complétée, on arrête d'afficher les étapes suivantes
+
+    # Ajouter l'auteur de l'application en bas
+    footer_label = tk.Label(help_frame, text="Made by Raphaël CARABEUF", bg=color2, fg=color1, font=("Segoe UI", 6))
+    footer_label.pack(side='bottom', fill='x', padx=10, pady=4)
+
+    # Label pour le lien hypertexte
+    link_label = tk.Label(help_frame, text="Example-Video", fg="blue", bg=color2, cursor="hand2", font=("Segoe UI", 13, "underline"))
+    link_label.pack(side='bottom', fill='x', padx=0, pady=(8,16))
+    link_label.bind("<Button-1>", lambda e: open_video())
+
 # ================================================= Interface Graphique ============================================
 root = tk.Tk()
 root.title("Merge Excel Files")
+root.geometry("1100x550")  # Augmentez la largeur pour inclure la section d'aide
 
 # Définir l'icône de la fenêtre
 icon_path = os.path.join(bdd, 'engine.ico')
@@ -868,7 +943,6 @@ if last_state:
     file1 = last_state.get('file1')
     file2 = last_state.get('file2')
     preset = last_state.get('preset')
-
 
 # Créer un style personnalisé pour l'OptionMenu
 style = ttk.Style(root)
@@ -889,6 +963,10 @@ for i in range(7):
     root.grid_columnconfigure(i, weight=1)  # Toutes les colonnes ont le même poids
     root.grid_rowconfigure(i, weight=1)
 
+root.grid_columnconfigure(0, weight=0, minsize=50)  # Ajustez 'minsize' pour définir la largeur
+root.grid_columnconfigure(6, weight=0, minsize=50)  # Ajustez 'minsize' pour définir la largeur
+root.grid_columnconfigure(3, weight=0, minsize=50)  # Ajustez 'minsize' pour définir la largeur
+
 # Création des widgets
 bg_path = os.path.join(bdd, 'intro1.png')
 bg_image = Image.open(bg_path)
@@ -901,14 +979,14 @@ bg_label.grid(row=0, column=0, rowspan=7, columnspan=7, sticky="nsew")  # Spanni
 bg_label.lower()
 
 # Démarrer l'animation de l'image de fond
-#  update_image (bg_label, bg_image, 90, 0.1, True)
+# update_image(bg_label, bg_image, 90, 0.1, True)
 
 # Ajouter une étiquette pour afficher le nom du fichier sélectionné
-file_label1 = tk.Label(root, text="", font=font_mini, bg=color1, fg=color2, padx=0, pady=0, wraplength=200)
+file_label1 = tk.Label(root, text="", font=font_mini, bg=color1, fg=color2, padx=0, pady=0, wraplength=100)
 file_label1.grid(row=3, column=1, padx=40, pady=20, sticky="nsew")
 file_label1.grid_remove()  # Rendre le widget invisible au départ
 
-file_label2 = tk.Label(root, text="", font=font_mini, bg=color1, fg=color2, padx=0, pady=2, wraplength=200)
+file_label2 = tk.Label(root, text="", font=font_mini, bg=color1, fg=color2, padx=0, pady=2, wraplength=100)
 file_label2.grid(row=3, column=5, padx=40, pady=20, sticky="nsew")
 file_label2.grid_remove()  # Rendre le widget invisible au départ
 
@@ -917,36 +995,39 @@ btn_reset = tk.Button(root, text="Reset", command=reset, bg=color1, font=font_bu
                       relief=tk.SOLID, bd=1, fg=color2, padx=0, pady=0, cursor="target")
 btn_reset.grid(row=0, column=0, ipadx=0, ipady=0, sticky="nsew")
 
+# Bouton Do Nothing (nouveau bouton en haut à droite)
+btn_help = tk.Button(root, text="Guide", command=help_step, bg=color1, font=font_button,
+                     relief=tk.SOLID, bd=1, fg=color2, padx=0, pady=0, cursor="target")
+btn_help.grid(row=0, column=6, ipadx=0, ipady=0, sticky="nsew")
+
 # Ajouter une étiquette pour expliquer ce que fait l'application
 app_explanation = tk.Label(root, text="Select two excel files to compare any column of your choice.",
                            font=font_style, bg=color1, fg=color2)
-app_explanation.grid(row=0, column=1, columnspan=6, sticky="nsew")
+app_explanation.grid(row=0, column=1, columnspan=5, sticky="nsew")
 
 # Bouton pour sélectionner le fichier 1
 btn_select_file1 = tk.Button(root, text="Select 1st File", command=select_file1, bg=color2, font=font_style,
-                             relief=tk.SOLID, bd=1, fg=color1, width=8, height=2, cursor="target", wraplength=200)
-btn_select_file1.grid(row=2, column=1, padx=10, pady=(20,0), sticky="nsew")
+                             relief=tk.SOLID, bd=1, fg=color1, width=8, height=2, cursor="target", wraplength=100)
+btn_select_file1.grid(row=2, column=1, padx=10, pady=(20, 0), sticky="nsew")
 btn_select_file1.bind("<Enter>", lambda event: on_enter1(event))
 btn_select_file1.bind("<Leave>", lambda event: on_leave1(event))
 
 # Bouton pour sélectionner le fichier 2
 btn_select_file2 = tk.Button(root, text="Select 2nd File", command=select_file2, bg=color2, font=font_style,
-                             relief=tk.SOLID, bd=1, fg=color1, width=8, height=2, cursor="target", wraplength=200)
-btn_select_file2.grid(row=2, column=5, padx=10, pady=(20,0), sticky="nsew")
+                             relief=tk.SOLID, bd=1, fg=color1, width=8, height=2, cursor="target", wraplength=100)
+btn_select_file2.grid(row=2, column=5, padx=10, pady=(20, 0), sticky="nsew")
 btn_select_file2.bind("<Enter>", lambda event: on_enter2(event))
 btn_select_file2.bind("<Leave>", lambda event: on_leave2(event))
 
 # Bouton pour lancer la fusion des données
 btn_merge_files = tk.Button(root, text="Fusion", command=merge_files_with_progress_dialog, bg=color2, font=font_title,
                             relief=tk.SOLID, fg="gray", bd=1, width=8, height=1, cursor="target", wraplength=200)
-btn_merge_files.grid(row=2, column=3, padx=100, pady=(20,0), sticky="nsew")
-# btn_merge_files.bind("<Enter>", lambda event: on_enter3(event))
-# btn_merge_files.bind("<Leave>", lambda event: on_leave3(event))
+btn_merge_files.grid(row=2, column=3, padx=100, pady=(20, 0), sticky="nsew")
 
-#-------------------------------------------------- PRESETS-------------------------------------------------------------
+# -------------------------------------------------- PRESETS -------------------------------------------------------------
 toggle_button = tk.Button(root, text="▲  Presets  ▲", bg=color2, font=font_mini,
                           relief=tk.SOLID, bd=1, fg=color1, width=8, height=1, cursor="hand2")
-toggle_button.grid(row=6, rowspan=2, column=0, columnspan=7, pady=(5, 0), sticky="nsew")
+toggle_button.grid(row=6, rowspan=2, column=0, columnspan=7, pady=(0, 0), sticky="nsew")
 toggle_button.bind("<Enter>", lambda event: preset_frame.grid())
 
 preset_frame = tk.Frame(root, bg=color1, bd=1, relief=tk.SOLID)
@@ -975,7 +1056,7 @@ for i in range(1, 8):
 # Création des boutons presets
 buttons_list = []
 for i, txt in enumerate(button_texts, start=1):
-    btn = tk.Button(preset_frame, text=txt, bg=color2, font=font_mini, relief=tk.SOLID, bd=1, fg=color1, cursor="hand2", command=lambda index=i, text=txt: open_button_window(index))
+    btn = tk.Button(preset_frame, text=txt, bg=color2, font=font_mini, relief=tk.SOLID, bd=1, fg=color1, cursor="hand2", command=lambda index=i, text=txt: open_preset_window(index))
     btn.pack(side="left", fill="both", expand=True, padx=10, pady=10)
     buttons_list.append(btn)
 
@@ -992,7 +1073,15 @@ menu.configure(font=font_style, bd=1, background=color1, foreground=color2, acti
 
 # Personnaliser le menu déroulant
 preset_menu.config(bg=color2, font=font_style, fg=color1, bd=1)  # Appliquer les styles ici
-preset_menu.grid(row=4, column=3, sticky="nsew", padx=70 , pady=(100,0))
+preset_menu.grid(row=4, column=3, sticky="nsew", padx=70, pady=(100, 0))
+
+# Ajouter un cadre pour la section d'aide
+help_frame = tk.Frame(root, bg=color2, bd=2, relief=tk.SOLID, width=100)  # Définir la largeur fixe
+help_frame.grid(row=0, column=7, rowspan=7, sticky="nsew")
+
+# Initialiser la section d'aide comme cachée
+help_visible = False
+help_frame.grid_remove()
 
 # Changer les couleurs du fond
 colors = []
@@ -1016,6 +1105,9 @@ if last_state:
 
     if preset:
         update_selected_preset(preset, preset_menu)
+
+# Initialisation de la section d'aide
+help_step()
 
 # Fin
 center_window(root, 1000, 500)  # Redimensionne la fenêtre

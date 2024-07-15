@@ -17,6 +17,7 @@ a = Analysis(
         ('button_5_data.txt', '.'),
         ('button_6_data.txt', '.'),
         ('button_7_data.txt', '.'),
+        ('example.mp4', '.'),
     ],
     hiddenimports=[],  # Ajoutez ici les modules Python importés dynamiquement
     hookspath=[],  # Chemin vers les hooks personnalisés si nécessaire
