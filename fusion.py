@@ -22,6 +22,9 @@ from openpyxl.chart import BarChart, Reference
 # =============================================== CONFIGURATIONS ==================================================
 bdd = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
 
+# VERSION
+version = "2024.08.12"
+
 # Couleurs
 color1 = '#012B65'
 color2 = '#90CBFB'
@@ -150,10 +153,13 @@ def merge_files():
         columns={'REFERENCE': ref_entry1_var.get(), 'COMPARE_1': f"{date_entry1_var.get()} \n({name1})",
                  'COMPARE_2': f"{date_entry2_var.get()} \n({name2})"}, inplace=True)
 
+    # Supprimer les lignes où la colonne REFERENCE contient des valeurs vides ou nulles
+    df_output = df_output[~df_output[ref_entry1_var.get()].isin([None, '', ' ', 'NaT', 'nan'])]  # Supprime les lignes où la colonne REFERENCE est vide
+    df_output.dropna(subset=[ref_entry1_var.get()], inplace=True)  # Supprime les lignes où la colonne REFERENCE est NaN ou NaT
+
     progress_dialog.destroy()
 
     save_excel_with_chart(df_output, selected_preset.get())
-
 
 def check_the_parameters():
     if file1 is None or file2 is None:
@@ -325,7 +331,53 @@ def add_bar_chart(sheet):
 
     print("Graphique en barres ajouté en H2.")
 
+# ========================================== CLASSE SPECIALE =========================================================
+class ToolTip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tip_window = None
+        self.id = None
+        self.x = self.y = 0
+        widget.bind("<Enter>", self.enter)
+        widget.bind("<Leave>", self.leave)
+        widget.bind("<ButtonPress>", self.leave)  # Ajout pour masquer le tooltip lors d'un clic
+        widget.bind("<ButtonRelease>", self.enter)  # Afficher le tooltip après avoir relâché le clic
 
+    def enter(self, event=None):
+        self.schedule()
+
+    def leave(self, event=None):
+        self.unschedule()
+        self.hidetip()
+
+    def schedule(self):
+        self.unschedule()
+        self.id = self.widget.after(300, self.showtip)
+
+    def unschedule(self):
+        id5 = self.id
+        self.id = None
+        if id5:
+            self.widget.after_cancel(id5)
+
+    def showtip(self, event=None):
+        x, y, _cx, cy = self.widget.bbox("insert")
+        x = x + self.widget.winfo_rootx() + 30
+        y = y + cy + self.widget.winfo_rooty() + 30
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry("+%d+%d" % (x, y))
+        label = tk.Label(tw, text=self.text, justify=tk.LEFT,
+                         background=color3, relief=tk.SOLID, borderwidth=1,
+                         font=font_button)
+        label.pack(ipadx=1)
+
+    def hidetip(self):
+        tw = self.tip_window
+        self.tip_window = None
+        if tw:
+            tw.destroy()
 # ======================================== Fonctions utilitaires =====================================================
 def format_excel(df_output, excel_file, sheet_name):
     df_output.to_excel(excel_file, index=False)
@@ -395,6 +447,8 @@ def apply_date_conversion(df, date_columns):
     date_formats = ["%d/%m/%Y", "%d.%m.%Y", "%Y.%m.%d", "%Y/%m/%d"]
 
     def convert_dates(value):
+        if pd.isna(value) or value == '':
+            return ''  # Garder la case vide si elle est vide
         for date_format in date_formats:
             try:
                 return pd.to_datetime(value, format=date_format, errors='raise').strftime('%d.%m.%Y')
@@ -404,6 +458,9 @@ def apply_date_conversion(df, date_columns):
 
     for col in date_columns:
         df[col] = df[col].apply(convert_dates)
+
+    # Après la conversion, s'assurer que toutes les NaT soient remplacées par des chaînes vides
+    df[date_columns] = df[date_columns].replace({pd.NaT: '', 'NaT': ''})
     return df
 
 
@@ -452,7 +509,6 @@ def toggle_keep_eight_digits():
     use_keep_eight_digits = not use_keep_eight_digits
     update_toggle_button()
     save_last_state(file1, file2, selected_preset.get())
-
 
 def update_toggle_button():
     if help_visible:
@@ -699,6 +755,11 @@ def help_step():
 
     if not help_visible:
         help_frame.grid_remove()
+
+        if use_keep_eight_digits:
+            btn_toggle_keep_eight_digits.config(text="PO mode :\nActive", bg=color2, fg=color1)
+        else:
+            btn_toggle_keep_eight_digits.config(text="PO mode :\nInactive", bg=color1, fg=color2)
     else:
         help_frame.grid(row=0, column=7, rowspan=7, sticky="nsew")
 
@@ -976,7 +1037,7 @@ def update_help_section():
             break  # Si une étape n'est pas complétée, on arrête d'afficher les étapes suivantes
 
     # Ajouter l'auteur de l'application en bas
-    footer_label = tk.Label(help_frame, text="Made by Raphaël CARABEUF", bg=color2, fg=color1, font=("Segoe UI", 6))
+    footer_label = tk.Label(help_frame, text="Made by Raphaël CARABEUF", bg=color2, fg=color1, font=("Segoe UI", 7))
     footer_label.pack(side='bottom', fill='x', padx=10, pady=4)
 
     # Label pour le lien hypertexte
@@ -988,7 +1049,7 @@ def update_help_section():
 
 # ================================================= Interface Graphique ============================================
 root = tk.Tk()
-root.title("Merge Excel Files")
+root.title(f"Merge Excel Files - Version {version}")
 root.geometry("1100x550")  # Augmentez la largeur pour inclure la section d'aide
 root.configure(highlightbackground=color3, highlightthickness=2)  # Ajouter une bordure
 
@@ -1091,10 +1152,12 @@ btn_toggle_keep_eight_digits = tk.Button(root, text=initial_text, command=toggle
                                          fg=initial_fg, font=font_button, relief=tk.SOLID, bd=1, width=1, height=1,
                                          cursor="tcross")
 btn_toggle_keep_eight_digits.grid(row=0, column=1, padx=(10, 120), pady=0, sticky="nsew")
+tooltip_text = "Turn on this button when your\nreference column is a 8 digits PO."
+ToolTip(btn_toggle_keep_eight_digits, tooltip_text)
 
 # -------------------------------------------------- PRESETS -------------------------------------------------------------
 toggle_button = tk.Button(root, text="▲  Presets  ▲", bg=color2, font=font_mini,
-                          relief=tk.SOLID, bd=1, fg=color1, width=8, height=14, cursor="hand2")
+                          relief=tk.SOLID, bd=1, fg=color1, width=8, height=1, cursor="hand2")
 toggle_button.grid(row=6, rowspan=2, column=0, columnspan=7, pady=(0, 0), sticky="nsew")
 toggle_button.bind("<Enter>", lambda event: preset_frame.grid())
 
